@@ -6,12 +6,12 @@ package iuh.fit.edu.backend.domain.entity.nosql;
 
 import iuh.fit.edu.backend.constant.PrivacyType;
 import iuh.fit.edu.backend.constant.StatusType;
+import iuh.fit.edu.backend.domain.entity.nosql.embeddable.Location;
 import jakarta.persistence.Id;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
-import org.bson.types.ObjectId;
 import org.springframework.data.mongodb.core.index.CompoundIndex;
 import org.springframework.data.mongodb.core.index.CompoundIndexes;
 import org.springframework.data.mongodb.core.index.Indexed;
@@ -46,10 +46,10 @@ import java.util.List;
 public class Story {
 
     @Id
-    private ObjectId id;
+    private String id;
 
     @Indexed
-    private ObjectId userId;
+    private String userId;
 
     // Media (image/video)
     private StoryMedia media;
@@ -65,8 +65,8 @@ public class Story {
     private List<Sticker> stickers;
 
     // Tags
-    private List<ObjectId> taggedUserIds;
-    private List<ObjectId> mentions;
+    private List<String> taggedUserIds;
+    private List<String> mentions;
 
     // Location
     private Location location;
@@ -79,11 +79,11 @@ public class Story {
     private boolean allowReactions;
     private boolean allowSharing;
 
-    // Stats
-    private long viewCount;
-    private long reactCount;
+    // Stats (shared with Post)
+    private Stats stats;
+    
+    // Reply count (specific to stories)
     private long replyCount;
-    private long shareCount;
 
     // Viewers tracking (lưu trong collection riêng StoryView)
     // Giờ chỉ cần count
@@ -103,79 +103,54 @@ public class Story {
     // Nếu user muốn lưu story làm Highlight, set isArchived=true và KHÔNG set expireAt
     @Indexed
     private Instant expireAt;
-}
 
-@Data
-@Builder
-@NoArgsConstructor
-@AllArgsConstructor
-class StoryMedia {
-    private String url;
-    private String type; // image | video
-    private String thumbnailUrl;
-    private Integer width;
-    private Integer height;
-    private Long duration; // cho video
-    // Filter/Effect applied
-    private String filterName;
-}
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class StoryMedia {
+        private String url;
+        private String type; // image | video
+        private String thumbnailUrl;
+        private Integer width;
+        private Integer height;
+        private Long duration; // cho video
+        // Filter/Effect applied
+        private String filterName;
+    }
 
-@Data
-@Builder
-@NoArgsConstructor
-@AllArgsConstructor
-class TextStyle {
-    private String fontFamily;
-    private String fontSize;
-    private String color;
-    private String backgroundColor;
-    private String alignment; // left | center | right
-    private String animation; // fade | slide | bounce...
-}
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class TextStyle {
+        private String fontFamily;
+        private String fontSize;
+        private String color;
+        private String backgroundColor;
+        private String alignment; // left | center | right
+        private String animation; // fade | slide | bounce...
+    }
 
-@Data
-@Builder
-@NoArgsConstructor
-@AllArgsConstructor
-class Music {
-    private String trackId;
-    private String title;
-    private String artist;
-    private String coverUrl;
-    private Integer startTime; // seconds
-    private Integer duration; // seconds
-}
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class Sticker {
+        private String type; // emoji | gif | poll | question | countdown | location
+        private String url;
+        private Position position;
+        private Integer rotation; // degrees
+        private Float scale;
+        private String data; // JSON data cho interactive stickers (poll, question...)
+    }
 
-@Data
-@Builder
-@NoArgsConstructor
-@AllArgsConstructor
-class Sticker {
-    private String type; // emoji | gif | poll | question | countdown | location
-    private String url;
-    private Position position;
-    private Integer rotation; // degrees
-    private Float scale;
-    private String data; // JSON data cho interactive stickers (poll, question...)
-}
-
-@Data
-@Builder
-@NoArgsConstructor
-@AllArgsConstructor
-class Position {
-    private Float x; // percentage
-    private Float y; // percentage
-}
-
-@Data
-@Builder
-@NoArgsConstructor
-@AllArgsConstructor
-class Location {
-    private String name;
-    private String address;
-    private Double latitude;
-    private Double longitude;
-    private String placeId;
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class Position {
+        private Float x; // percentage
+        private Float y; // percentage
+    }
 }

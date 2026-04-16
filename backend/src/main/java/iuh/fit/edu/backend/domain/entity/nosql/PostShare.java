@@ -11,7 +11,6 @@ import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
-import org.bson.types.ObjectId;
 import org.springframework.data.mongodb.core.index.CompoundIndex;
 import org.springframework.data.mongodb.core.index.CompoundIndexes;
 import org.springframework.data.mongodb.core.index.Indexed;
@@ -51,22 +50,22 @@ import java.util.List;
 public class PostShare {
 
     @Id
-    private ObjectId id;
+    private String id;
 
     @Indexed
-    private ObjectId originalPostId;
+    private String originalPostId;
     
     @Indexed
-    private ObjectId sharedByUserId;
+    private String sharedByUserId;
 
     // Caption khi share
     private String content;
     
     // Mentions trong caption
-    private List<ObjectId> mentions;
+    private List<String> mentions;
     
     // Tags
-    private List<ObjectId> taggedUserIds;
+    private List<String> taggedUserIds;
     
     // Privacy của share
     private PrivacyType privacy;
@@ -89,6 +88,6 @@ public class PostShare {
 class ShareStats {
     private long reactCount;
     private long commentCount;
-    private long shareCount; // Re-share
+    private long shareCount;
     private long viewCount;
 }

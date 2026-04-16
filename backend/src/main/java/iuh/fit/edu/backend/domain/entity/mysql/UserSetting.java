@@ -4,6 +4,7 @@
  */
 package iuh.fit.edu.backend.domain.entity.mysql;
 
+import iuh.fit.edu.backend.constant.PrivacyType;
 import jakarta.persistence.*;
 import lombok.Getter;
 import lombok.Setter;
@@ -29,6 +30,6 @@ public class UserSetting {
     @JoinColumn(name = "user_id")
     private User user;
 
-    private String privacyProfile;
+    private PrivacyType privacyProfile;
     private Boolean allowMessageFromStrangers;
 }

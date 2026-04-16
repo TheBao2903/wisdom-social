@@ -10,7 +10,6 @@ import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
-import org.bson.types.ObjectId;
 import org.springframework.data.mongodb.core.index.CompoundIndex;
 import org.springframework.data.mongodb.core.index.CompoundIndexes;
 import org.springframework.data.mongodb.core.mapping.Document;
@@ -45,13 +44,13 @@ import java.util.List;
 public class SavedPost {
 
     @Id
-    private ObjectId id;
+    private String id;
 
-    private ObjectId userId;
+    private String userId;
 
     // Target có thể là POST, POST_SHARE, STORY, NOTE
     private TargetType targetType;
-    private ObjectId targetId;
+    private String targetId;
 
     // Collection/Folder name (VD: "Công thức nấu ăn", "Tài liệu học tập")
     private String collectionName;

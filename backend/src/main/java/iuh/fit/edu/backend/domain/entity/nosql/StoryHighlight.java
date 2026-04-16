@@ -9,7 +9,6 @@ import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
-import org.bson.types.ObjectId;
 import org.springframework.data.mongodb.core.index.CompoundIndex;
 import org.springframework.data.mongodb.core.index.CompoundIndexes;
 import org.springframework.data.mongodb.core.index.Indexed;
@@ -41,10 +40,10 @@ import java.util.List;
 public class StoryHighlight {
 
     @Id
-    private ObjectId id;
+    private String id;
 
     @Indexed
-    private ObjectId userId;
+    private String userId;
 
     // Tên category highlight (VD: "Du lịch 2025", "Ăn uống", "Gia đình"...)
     private String title;
@@ -54,7 +53,7 @@ public class StoryHighlight {
 
     // Danh sách story IDs trong highlight này
     // LƯU Ý: Stories phải có isArchived = true để không bị TTL xóa
-    private List<ObjectId> storyIds;
+    private List<String> storyIds;
 
     // Display order (để user sắp xếp highlights theo ý muốn)
     private Integer displayOrder;

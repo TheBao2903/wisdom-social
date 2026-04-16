@@ -4,6 +4,9 @@
  */
 package iuh.fit.edu.backend.constant;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonValue;
+
 /*
  * @description
  * @author: Huu Thai
@@ -11,16 +14,42 @@ package iuh.fit.edu.backend.constant;
  * @version: 1.0
  */
 public enum Gender {
-    MALE {
-        @Override
-        public String toString() {
-            return "Nam";
+    MALE("Nam"),
+    FEMALE("Nữ"),
+    OTHER("Other");
+
+    private final String displayName;
+
+    Gender(String displayName) {
+        this.displayName = displayName;
+    }
+
+    @Override
+    public String toString() {
+        return displayName;
+    }
+
+    @JsonValue
+    public String getValue() {
+        return this.name();
+    }
+
+    @JsonCreator
+    public static Gender fromValue(String value) {
+        if (value == null) {
+            return null;
         }
-    }, FEMALE {
-        @Override
-        public String toString() {
-            return "Nữ";
+        try {
+            return Gender.valueOf(value.trim().toUpperCase());
+        } catch (IllegalArgumentException e) {
+            // Try lowercase
+            for (Gender gender : Gender.values()) {
+                if (gender.name().equalsIgnoreCase(value)) {
+                    return gender;
+                }
+            }
+            return null;
         }
-    };
+    }
 
 }

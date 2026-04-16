@@ -1,35 +1,23 @@
-/*
- * @ (#) .java    1.0
- * Copyright (c)  IUH. All rights reserved.
- */
 package iuh.fit.edu.backend.domain.entity.mysql;
 
-import jakarta.persistence.Entity;
-import jakarta.persistence.Id;
-import jakarta.persistence.JoinColumn;
-import jakarta.persistence.ManyToOne;
-import lombok.Getter;
-import lombok.Setter;
+import iuh.fit.edu.backend.constant.SessionStatus;
+import jakarta.persistence.*;
+import lombok.Data;
 
-import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
 
-/*
- * @description
- * @author: Huu Thai
- * @date:
- * @version: 1.0
- */
+@Data
 @Entity
-@Getter
-@Setter
+@Table(name = "sessions")
 public class Session {
-
     @Id
-    private String token;
-
-    private LocalDateTime expireAt;
+    @GeneratedValue(strategy = GenerationType.UUID)
+    private String seesion_id;
+    private SessionStatus status;
 
     @ManyToOne
     @JoinColumn(name = "user_id")
     private User user;
+
+    private OffsetDateTime expireAt;
 }

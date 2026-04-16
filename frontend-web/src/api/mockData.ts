@@ -88,6 +88,7 @@ export const mockPosts: Post[] = [
         createdAt: '3h ago',
         isLiked: false,
         isSaved: false,
+        privacy: 'PUBLIC',
     },
     {
         id: '2',
@@ -101,6 +102,7 @@ export const mockPosts: Post[] = [
         createdAt: '5h ago',
         isLiked: true,
         isSaved: false,
+        privacy: 'FRIENDS',
     },
     {
         id: '3',
@@ -122,6 +124,7 @@ export const mockPosts: Post[] = [
         createdAt: '6h ago',
         isLiked: true,
         isSaved: true,
+        privacy: 'PUBLIC',
     },
     {
         id: '4',
@@ -135,6 +138,7 @@ export const mockPosts: Post[] = [
         createdAt: '8h ago',
         isLiked: false,
         isSaved: false,
+        privacy: 'PRIVATE',
     },
     {
         id: '5',
@@ -163,6 +167,7 @@ export const mockPosts: Post[] = [
         createdAt: '12h ago',
         isLiked: false,
         isSaved: true,
+        privacy: 'SPECIFIC',
     },
 ];
 

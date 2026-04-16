@@ -1,15 +1,12 @@
-import { Text, View } from "react-native";
+import { useAppContext } from "@/context/AppContext";
+import { Redirect } from "expo-router";
 
-export default function Index() {
-  return (
-    <View
-      style={{
-        flex: 1,
-        justifyContent: "center",
-        alignItems: "center",
-      }}
-    >
-      <Text>Edit app/index.tsx to edit this screen.</Text>
-    </View>
-  );
+export default function IndexPage() {
+    const { loggedIn } = useAppContext();
+
+    if (!loggedIn) {
+        return <Redirect href="/(auth)/login" />;
+    }
+
+    return <Redirect href="/(tabs)" />;
 }

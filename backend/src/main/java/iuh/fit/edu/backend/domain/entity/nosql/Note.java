@@ -1,7 +1,3 @@
-/*
- * @ (#) .java    1.0
- * Copyright (c)  IUH. All rights reserved.
- */
 package iuh.fit.edu.backend.domain.entity.nosql;
 
 import iuh.fit.edu.backend.constant.PrivacyType;
@@ -11,7 +7,6 @@ import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
-import org.bson.types.ObjectId;
 import org.springframework.data.mongodb.core.index.CompoundIndex;
 import org.springframework.data.mongodb.core.index.CompoundIndexes;
 import org.springframework.data.mongodb.core.index.Indexed;
@@ -45,19 +40,20 @@ import java.time.Instant;
 public class Note {
 
     @Id
-    private ObjectId id;
+    private String id;
 
     @Indexed
-    private ObjectId userId;
-    
+    private String userId;
+
     private String content;
+
+    // Location tag
+    private String location;
 
     // Background theme
     private NoteTheme theme;
 
-    // Music track
-    private ObjectId musicTrackId;
-    private NoteMusic music;
+    private Music music;
 
     // Privacy
     private PrivacyType privacy;
@@ -71,8 +67,9 @@ public class Note {
     // Timestamps
     private Instant createdAt;
     
-    // TTL - Tự động xóa sau 24h (config via MongoConfig)
-    @Indexed
+    // TTL - Tự động xóa sau 24h (86400 seconds)
+    // MongoDB sẽ tự động xóa document khi expireAt đã qua
+    @Indexed(expireAfter  = "PT0S") // 0 = xóa ngay khi expireAt time đến
     private Instant expireAt;
 }
 
@@ -89,18 +86,6 @@ class NoteTheme {
     private String fontFamily;
     private String fontSize;
     private String textAlign;
-}
-
-@Data
-@Builder
-@NoArgsConstructor
-@AllArgsConstructor
-class NoteMusic {
-    private String trackId;
-    private String title;
-    private String artist;
-    private String coverUrl;
-    private String previewUrl;
 }
 
 @Data

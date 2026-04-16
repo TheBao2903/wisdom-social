@@ -17,9 +17,8 @@ import java.util.concurrent.TimeUnit;
 
 /**
  * @description: MongoDB Index Configuration
- * QUAN TRỌNG: TTL auto-delete đã bị TẮT - Dữ liệu được giữ lại vĩnh viễn
- * expireAt field chỉ dùng để đánh dấu thời gian hết hạn, KHÔNG tự động xóa
- * Sử dụng soft delete hoặc archive process thay vì TTL
+ * TTL auto-delete được BẬT cho Notes (24h) - Các entity khác giữ lại vĩnh viễn
+ * expireAt field dùng để tự động xóa sau thời gian quy định
  * @author: Thế Bảo
  * @date: 2026-01-20
  * @version: 1.0
@@ -36,19 +35,18 @@ public class MongoIndexConfig {
         log.info("Initializing MongoDB indexes...");
 
         try {
-            // TTL AUTO-DELETE đã bị TẮT theo yêu cầu
-            // Tất cả dữ liệu sẽ được giữ lại trong database
-            // expireAt field chỉ để đánh dấu logic, KHÔNG tự động xóa
+            // TTL AUTO-DELETE chỉ BẬT cho Notes - Tự động xóa sau 24h
+            // Các entity khác (Story, Notification...) giữ lại trong database
             
-            /* COMMENT OUT TTL INDEXES - Không xóa dữ liệu tự động
+            // Notes - 24 hours TTL - Tự động xóa sau 24h
+            createTTLIndex("notes", "expireAt", 0, TimeUnit.SECONDS);
+
+            /* COMMENT OUT TTL INDEXES cho các entity khác - Không xóa tự động
             // Story - 24 hours TTL
             createTTLIndex("stories", "expireAt", 24, TimeUnit.HOURS);
 
             // Story Views - 48 hours TTL
             createTTLIndex("story_views", "expireAt", 48, TimeUnit.HOURS);
-
-            // Notes - 24 hours TTL
-            createTTLIndex("notes", "expireAt", 24, TimeUnit.HOURS);
 
             // Notifications - 90 days TTL
             createTTLIndex("notifications", "expireAt", 90, TimeUnit.DAYS);
@@ -57,7 +55,7 @@ public class MongoIndexConfig {
             createTTLIndex("hashtag_trending", "expireAt", 30, TimeUnit.DAYS);
             */
 
-            log.info("MongoDB indexes initialized successfully (TTL disabled - data retained permanently)");
+            log.info("MongoDB indexes initialized successfully (TTL enabled for Notes only)");
         } catch (Exception e) {
             log.error("Error initializing MongoDB indexes", e);
         }

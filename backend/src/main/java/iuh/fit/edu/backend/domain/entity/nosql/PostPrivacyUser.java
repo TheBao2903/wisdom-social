@@ -7,7 +7,6 @@ package iuh.fit.edu.backend.domain.entity.nosql;
 import iuh.fit.edu.backend.constant.TargetType;
 import jakarta.persistence.Id;
 import lombok.Data;
-import org.bson.types.ObjectId;
 import org.springframework.data.mongodb.core.mapping.Document;
 
 /*
@@ -21,12 +20,12 @@ import org.springframework.data.mongodb.core.mapping.Document;
 public class PostPrivacyUser {
 
     @Id
-    private ObjectId id;
+    private String id;
 
-    private ObjectId targetId;
+    private String targetId;
     private TargetType targetType;
 
-    private ObjectId userId;
+    private String userId;
 
     private String type; // allow | deny
 }

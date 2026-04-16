@@ -11,7 +11,6 @@ import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
-import org.bson.types.ObjectId;
 import org.springframework.data.mongodb.core.index.CompoundIndex;
 import org.springframework.data.mongodb.core.index.CompoundIndexes;
 import org.springframework.data.mongodb.core.index.Indexed;
@@ -46,21 +45,21 @@ import java.util.List;
 public class Notification {
 
     @Id
-    private ObjectId id;
+    private String id;
 
     // Người nhận thông báo
     @Indexed
-    private ObjectId recipientId;
+    private String recipientId;
 
     // Người thực hiện hành động (có thể có nhiều người cùng react 1 post)
-    private List<ObjectId> actorIds;
+    private List<String> actorIds;
 
     // Loại thông báo
     private NotificationType type;
 
     // Đối tượng liên quan (POST, COMMENT, STORY...)
     private TargetType targetType;
-    private ObjectId targetId;
+    private String targetId;
 
     // Nội dung bổ sung (VD: nội dung comment, số người like...)
     private String content;

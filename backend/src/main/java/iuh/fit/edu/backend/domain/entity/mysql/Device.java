@@ -8,15 +8,18 @@ import jakarta.persistence.*;
 import lombok.Getter;
 import lombok.Setter;
 
+import java.time.OffsetDateTime;
+
 /*
  * @description
  * @author: Huu Thai
  * @date:
  * @version: 1.0
  */
-@Entity
+@Table(name = "devices")
 @Getter
 @Setter
+@Entity
 public class Device {
 
     @Id
@@ -24,7 +27,9 @@ public class Device {
     private Long id;
 
     private String deviceType;
-    private String pushToken;
+    private String nameDevice;
+    private String ipAddress;
+    private OffsetDateTime createAt;
 
     @ManyToOne
     @JoinColumn(name = "user_id")

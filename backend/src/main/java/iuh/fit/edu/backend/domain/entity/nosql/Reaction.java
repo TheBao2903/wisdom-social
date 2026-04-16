@@ -8,7 +8,6 @@ import iuh.fit.edu.backend.constant.ReactionType;
 import iuh.fit.edu.backend.constant.TargetType;
 import jakarta.persistence.Id;
 import lombok.Data;
-import org.bson.types.ObjectId;
 import org.springframework.data.mongodb.core.index.CompoundIndex;
 import org.springframework.data.mongodb.core.index.CompoundIndexes;
 import org.springframework.data.mongodb.core.mapping.Document;
@@ -43,12 +42,12 @@ import java.time.Instant;
 public class Reaction {
 
     @Id
-    private ObjectId id;
+    private String id;
 
-    private ObjectId userId;
+    private String userId;
 
     private TargetType targetType;
-    private ObjectId targetId;
+    private String targetId;
 
     private ReactionType type;
 

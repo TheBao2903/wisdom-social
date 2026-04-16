@@ -5,8 +5,7 @@
 package iuh.fit.edu.backend.domain.entity.mysql;
 
 import jakarta.persistence.*;
-import lombok.Getter;
-import lombok.Setter;
+import lombok.*;
 
 /*
  * @description
@@ -18,6 +17,9 @@ import lombok.Setter;
 @Getter
 @Setter
 @Entity
+@Builder
+@AllArgsConstructor
+@NoArgsConstructor
 public class BlockedUser {
 
     @Id
@@ -27,6 +29,10 @@ public class BlockedUser {
     @ManyToOne
     @JoinColumn(name = "blocker_id")
     private User blocker;
+
+    @ManyToOne
+    @JoinColumn(name = "blocker_page_id")
+    private Page blockerPage;
 
     @ManyToOne
     @JoinColumn(name = "blocked_id")

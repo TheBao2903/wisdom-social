@@ -1,0 +1,15 @@
+services:
+  redis:
+    image: redis:7.2
+    container_name: chat-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --requirepass sapassword --appendonly yes
+    volumes:
+      - chat_redis_data:/data
+    restart: unless-stopped
+volumes:
+  chat_redis_data:
+
+# Xoa data trong voulume
+# docker run --rm -v chat-system_chat_redis_data:/data alpine sh -c "rm -rf /data/*"

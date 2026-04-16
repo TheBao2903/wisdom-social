@@ -11,16 +11,6 @@ package iuh.fit.edu.backend.constant;
  * @version: 1.0
  */
 public enum ConversationType {
-    GROUP {
-        @Override
-        public String toString() {
-            return "Nhóm";
-        }
-    }, DIRECT {
-        @Override
-        public String toString() {
-            return "Cá nhân";
-        }
-    };
+    GROUP , DIRECT
 
 }

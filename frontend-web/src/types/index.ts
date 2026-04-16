@@ -3,23 +3,32 @@ export interface ApiResponse<T> {
     status: number;
     success: boolean;
     message: string;
-    data: T;
+    data: T | null;
+    errors?: any;
+    timestamp: string; // OffsetDateTime -> ISO string
 }
 
 // User Types
 export interface User {
-    id: string;
+    id: number;
     username: string;
     fullName: string;
-    avatar: string;
+    avatarUrl: string;
     bio?: string;
+    phone?: string;
+    gender?: "MALE" | "FEMALE" | "OTHER";
+    name?: string;
+    birthday?: string;
     isVerified?: boolean;
+    friendsCount?: number;
     followersCount?: number;
     followingCount?: number;
     postsCount?: number;
 }
 
 // Post Types
+export type PrivacyType = "PUBLIC" | "FRIENDS" | "ONLY_ME" | "SPECIFIC" | "EXCEPT";
+
 export interface Post {
     id: string;
     user: User;
@@ -30,6 +39,7 @@ export interface Post {
     createdAt: string;
     isLiked?: boolean;
     isSaved?: boolean;
+    privacy?: PrivacyType;
 }
 
 export interface Comment {

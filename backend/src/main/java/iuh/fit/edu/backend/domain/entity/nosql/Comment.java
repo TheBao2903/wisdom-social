@@ -11,7 +11,6 @@ import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
-import org.bson.types.ObjectId;
 import org.springframework.data.mongodb.core.index.CompoundIndex;
 import org.springframework.data.mongodb.core.index.CompoundIndexes;
 import org.springframework.data.mongodb.core.index.Indexed;
@@ -46,24 +45,24 @@ import java.util.List;
 public class Comment {
 
     @Id
-    private ObjectId id;
+    private String id;
 
     @Indexed
-    private ObjectId userId;
+    private String userId;
 
     @Indexed
     private TargetType targetType;
     @Indexed
-    private ObjectId targetId;
+    private String targetId;
 
     // Reply to comment (nested comment/thread)
     @Indexed
-    private ObjectId parentId;
+    private String parentId;
 
     private String content;
     
     // Mentions trong comment
-    private List<ObjectId> mentions;
+    private List<String> mentions;
 
     // Media trong comment (ảnh, GIF, sticker)
     private CommentMedia media;
