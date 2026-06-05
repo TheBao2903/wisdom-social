@@ -3,8 +3,7 @@ import { useNavigate } from "react-router-dom";
 import QRCode from "qrcode";
 import axios from "axios";
 import { setCookie } from "../utils/cookies";
-
-const API_BASE_URL = "http://localhost:8080/api";
+import { API_BASE_URL } from "../config/backend";
 
 export default function QRLogin() {
   const [sessionId, setSessionId] = useState<string>("");
@@ -70,7 +69,9 @@ export default function QRLogin() {
   const createQRSession = async () => {
     try {
       resetQrState();
-      const response = await axios.get(`${API_BASE_URL}/session/qr-login/create`);
+      const response = await axios.get(
+        `${API_BASE_URL}/session/qr-login/create`
+      );
       const newSessionId = response.data;
       setSessionId(newSessionId);
 
@@ -100,16 +101,18 @@ export default function QRLogin() {
   };
 
   useEffect(() => {
-      if (hasRun.current) return;
-      hasRun.current = true;
-      createQRSession();
+    if (hasRun.current) return;
+    hasRun.current = true;
+    createQRSession();
   }, []);
 
   useEffect(() => {
     if (!sessionId) return;
     pollRef.current = window.setInterval(async () => {
       try {
-        const response = await axios.get(`${API_BASE_URL}/session/qr-login/status/${sessionId}`);
+        const response = await axios.get(
+          `${API_BASE_URL}/session/qr-login/status/${sessionId}`
+        );
         console.log("QR status response:", response.data.data);
         const { status, expireAt } = response.data.data;
 
@@ -124,8 +127,11 @@ export default function QRLogin() {
         if (status === "CONFIRMED") {
           clearTimers();
 
-          const tokenResponse = await axios.get(`${API_BASE_URL}/session/qr-login/access-token/${sessionId}`);
-          const rawTokenPayload = tokenResponse.data?.data ?? tokenResponse.data;
+          const tokenResponse = await axios.get(
+            `${API_BASE_URL}/session/qr-login/access-token/${sessionId}`
+          );
+          const rawTokenPayload =
+            tokenResponse.data?.data ?? tokenResponse.data;
 
           // Accept multiple payload shapes from backend for safety.
           let accessToken: string | undefined;
@@ -139,8 +145,7 @@ export default function QRLogin() {
               rawTokenPayload.accessToken ??
               rawTokenPayload.idToken;
             refreshToken =
-              rawTokenPayload.refreshToken ??
-              rawTokenPayload.refreskToken;
+              rawTokenPayload.refreshToken ?? rawTokenPayload.refreskToken;
           }
 
           if (typeof accessToken === "string") {
@@ -153,14 +158,14 @@ export default function QRLogin() {
 
           if (accessToken && accessToken.length > 20) {
             // Store tokens using cookies; QR flow uses a dedicated refresh token cookie.
-            setCookie('accessToken', accessToken, 0.042); // 1 hour
+            setCookie("accessToken", accessToken, 0.042); // 1 hour
 
             if (refreshToken && refreshToken.length > 20) {
-              setCookie('refreshTokenQr', refreshToken, 7); // 7 days
+              setCookie("refreshTokenQr", refreshToken, 7); // 7 days
             }
 
-            localStorage.setItem('type', 'qr');
-            localStorage.setItem('authed', 'true');
+            localStorage.setItem("type", "qr");
+            localStorage.setItem("authed", "true");
 
             clearTimers();
             navigate("/");
@@ -189,7 +194,6 @@ export default function QRLogin() {
     };
   }, []);
 
-
   return (
     <div className="min-h-screen flex items-center justify-center bg-linear-to-br from-purple-50 to-blue-50 p-4">
       <div className="max-w-md w-full bg-white rounded-2xl shadow-xl p-8">
@@ -202,63 +206,62 @@ export default function QRLogin() {
           </p>
         </div>
 
-          <div className="space-y-6">
-            {qrCodeUrl && (
-              <div className="flex flex-col items-center">
-                <div className="bg-white p-4 rounded-lg border-4 border-gray-200 shadow-inner relative">
-                  <img
-                    src={qrCodeUrl}
-                    alt="QR Code"
-                    className="w-64 h-64"
-                  />
-                  <div className="mt-4 flex items-center justify-between gap-3 text-sm text-gray-600">
-                    <span>
-                      {countdownSeconds > 0
-                        ? `Hết hạn sau ${Math.floor(countdownSeconds / 60)
-                            .toString()
-                            .padStart(2, '0')}:${(countdownSeconds % 60)
-                            .toString()
-                            .padStart(2, '0')}`
-                        : 'Mã QR đã hết hạn'}
+        <div className="space-y-6">
+          {qrCodeUrl && (
+            <div className="flex flex-col items-center">
+              <div className="bg-white p-4 rounded-lg border-4 border-gray-200 shadow-inner relative">
+                <img src={qrCodeUrl} alt="QR Code" className="w-64 h-64" />
+                <div className="mt-4 flex items-center justify-between gap-3 text-sm text-gray-600">
+                  <span>
+                    {countdownSeconds > 0
+                      ? `Hết hạn sau ${Math.floor(countdownSeconds / 60)
+                          .toString()
+                          .padStart(2, "0")}:${(countdownSeconds % 60)
+                          .toString()
+                          .padStart(2, "0")}`
+                      : "Mã QR đã hết hạn"}
+                  </span>
+                  {isRejected && (
+                    <span className="text-red-600 font-semibold">
+                      Bị từ chối
                     </span>
-                    {isRejected && (
-                      <span className="text-red-600 font-semibold">Bị từ chối</span>
-                    )}
-                  </div>
-                </div>
-
-                <div className="mt-6 text-center">
-                  <div className="flex items-center justify-center space-x-2">
-                    <p className="text-lg font-semibold">
-                      {isRejected ? 'Yêu cầu đăng nhập đã bị từ chối' : 'Chờ quét mã QR...'}
-                    </p>
-                  </div>
+                  )}
                 </div>
               </div>
-            )}
 
-            {statusMessage && (
-              <div
-                className={`rounded-xl p-4 text-sm text-center ${
-                  isRejected
-                    ? 'bg-red-50 text-red-700 border border-red-200'
-                    : 'bg-amber-50 text-amber-700 border border-amber-200'
-                }`}
-              >
-                {statusMessage}
+              <div className="mt-6 text-center">
+                <div className="flex items-center justify-center space-x-2">
+                  <p className="text-lg font-semibold">
+                    {isRejected
+                      ? "Yêu cầu đăng nhập đã bị từ chối"
+                      : "Chờ quét mã QR..."}
+                  </p>
+                </div>
               </div>
-            )}
+            </div>
+          )}
 
-            {(isRejected || !qrCodeUrl) && (
-              <button
-                onClick={createQRSession}
-                className="w-full rounded-xl bg-blue-600 px-4 py-3 font-semibold text-white transition-colors hover:bg-blue-700"
-              >
-                Tạo mã QR mới
-              </button>
-            )}
-          </div>
-        
+          {statusMessage && (
+            <div
+              className={`rounded-xl p-4 text-sm text-center ${
+                isRejected
+                  ? "bg-red-50 text-red-700 border border-red-200"
+                  : "bg-amber-50 text-amber-700 border border-amber-200"
+              }`}
+            >
+              {statusMessage}
+            </div>
+          )}
+
+          {(isRejected || !qrCodeUrl) && (
+            <button
+              onClick={createQRSession}
+              className="w-full rounded-xl bg-blue-600 px-4 py-3 font-semibold text-white transition-colors hover:bg-blue-700"
+            >
+              Tạo mã QR mới
+            </button>
+          )}
+        </div>
 
         <div className="mt-8 pt-6 border-t border-gray-200">
           <button

@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { Check, X, Loader2 } from "lucide-react";
 import { buildS3Url } from "../../utils/s3";
 import type { User } from "../../types";
+import ConfirmModal from "../common/ConfirmModal";
 
 interface FriendRequestItemProps {
     user: User;
@@ -20,6 +21,7 @@ export default function FriendRequestItem({
     onCancel,
 }: FriendRequestItemProps) {
     const [actionLoading, setActionLoading] = useState<string | null>(null);
+    const [showCancelConfirm, setShowCancelConfirm] = useState(false);
 
     const handleAccept = async () => {
         if (!onAccept) return;
@@ -41,11 +43,14 @@ export default function FriendRequestItem({
         }
     };
 
-    const handleCancel = async () => {
+    const handleCancel = () => {
         if (!onCancel) return;
-        const confirmed = window.confirm("Bạn có chắc muốn hủy lời mời kết bạn?");
-        if (!confirmed) return;
-        
+        setShowCancelConfirm(true);
+    };
+
+    const doCancel = async () => {
+        if (!onCancel) return;
+        setShowCancelConfirm(false);
         setActionLoading("cancel");
         try {
             await onCancel(user.id);
@@ -59,6 +64,16 @@ export default function FriendRequestItem({
 
     return (
         <div className="flex items-center justify-between p-4 hover:bg-gray-50 dark:hover:bg-[#1a1a1a] transition-colors rounded-lg">
+            <ConfirmModal
+                open={showCancelConfirm}
+                title="Hủy lời mời kết bạn"
+                message="Bạn có chắc muốn hủy lời mời kết bạn này?"
+                confirmText="Hủy lời mời"
+                cancelText="Không"
+                variant="warning"
+                onConfirm={doCancel}
+                onCancel={() => setShowCancelConfirm(false)}
+            />
             {/* User Info */}
             <Link
                 to={`/profile/${user.username}`}

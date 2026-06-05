@@ -1,94 +1,76 @@
-import { AppHeader, EmptyState, UserAvatar } from "@/components";
-import { colors, spacing } from "@/constants";
+import { AppHeader, EmptyState, StoryViewer } from "@/components";
+import { colors } from "@/constants";
 import { useAppContext } from "@/context/AppContext";
+import { fetchStoryFeed, groupStoriesByUser } from "@/services/storyService";
+import { Story, StoryGroup } from "@/types";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import {
-    ImageBackground,
-    SafeAreaView,
-    StyleSheet,
-    Text,
-    View,
-} from "react-native";
+import { useEffect, useMemo, useState } from "react";
+import { ActivityIndicator, SafeAreaView, StyleSheet } from "react-native";
 
 export default function InstagramStoryScreen() {
     const { storyId } = useLocalSearchParams<{ storyId: string }>();
     const router = useRouter();
-    const { stories, getUserById } = useAppContext();
+    const { currentUser, upsertUsers } = useAppContext();
+    const [stories, setStories] = useState<Story[]>([]);
+    const [loading, setLoading] = useState(true);
 
-    const story = stories.find((item) => item.id === storyId);
-    const user = story ? getUserById(story.userId) : undefined;
+    useEffect(() => {
+        const load = async () => {
+            setLoading(true);
+            try {
+                const feed = await fetchStoryFeed(0, 50);
+                setStories(feed);
+                const users = feed.map((story) => story.user).filter(Boolean) as any[];
+                if (users.length) upsertUsers(users);
+            } finally {
+                setLoading(false);
+            }
+        };
+        void load();
+    }, [upsertUsers]);
 
-    if (!story || !user) {
+    const groups = useMemo<StoryGroup[]>(() => groupStoriesByUser(stories, currentUser), [stories, currentUser]);
+    const indices = useMemo(() => {
+        for (let groupIndex = 0; groupIndex < groups.length; groupIndex += 1) {
+            const storyIndex = groups[groupIndex].stories.findIndex((item) => item.id === storyId);
+            if (storyIndex >= 0) return { groupIndex, storyIndex };
+        }
+        return { groupIndex: 0, storyIndex: 0 };
+    }, [groups, storyId]);
+
+    if (loading) {
         return (
             <SafeAreaView style={styles.container}>
-                <AppHeader
-                    title="Story"
-                    leftAction={{
-                        icon: "arrow-back",
-                        onPress: () => router.back(),
-                    }}
-                />
+                <ActivityIndicator color={colors.primary} style={styles.loader} />
+            </SafeAreaView>
+        );
+    }
+
+    if (!groups.length) {
+        return (
+            <SafeAreaView style={styles.containerLight}>
+                <AppHeader title="Story" leftAction={{ icon: "arrow-back", onPress: () => router.back() }} />
                 <EmptyState title="Story không tồn tại" />
             </SafeAreaView>
         );
     }
 
     return (
-        <SafeAreaView style={styles.container}>
-            <AppHeader
-                title="Story"
-                leftAction={{
-                    icon: "arrow-back",
-                    onPress: () => router.back(),
-                }}
-            />
-            <ImageBackground
-                source={{ uri: story.image }}
-                style={styles.cover}
-                resizeMode="cover"
-            >
-                <View style={styles.overlay}>
-                    <View style={styles.userRow}>
-                        <UserAvatar
-                            uri={user.avatar}
-                            name={user.username}
-                            size={42}
-                        />
-                        <Text style={styles.username}>{user.username}</Text>
-                    </View>
-                    <Text style={styles.hint}>
-                        Tap để qua story tiếp theo (UI demo)
-                    </Text>
-                </View>
-            </ImageBackground>
-        </SafeAreaView>
+        <StoryViewer
+            visible
+            groups={groups}
+            initialGroupIdx={indices.groupIndex}
+            initialStoryIdx={indices.storyIndex}
+            currentUser={currentUser}
+            onClose={() => router.back()}
+            onStoryViewed={(id) => setStories((prev) => prev.map((story) => story.id === id ? { ...story, viewed: true, isViewed: true } : story))}
+            onStoryDeleted={(id) => setStories((prev) => prev.filter((story) => story.id !== id))}
+        />
     );
 }
 
 const styles = StyleSheet.create({
-    container: { flex: 1, backgroundColor: colors.black },
-    cover: {
-        flex: 1,
-    },
-    overlay: {
-        flex: 1,
-        backgroundColor: "rgba(0,0,0,0.25)",
-        padding: spacing.lg,
-        justifyContent: "space-between",
-    },
-    userRow: {
-        flexDirection: "row",
-        alignItems: "center",
-        gap: spacing.sm,
-    },
-    username: {
-        color: colors.white,
-        fontWeight: "700",
-        fontSize: 16,
-    },
-    hint: {
-        color: colors.white,
-        textAlign: "center",
-        marginBottom: spacing.xxl,
-    },
+    container: { flex: 1, backgroundColor: colors.black, justifyContent: "center" },
+    containerLight: { flex: 1, backgroundColor: colors.white },
+    loader: { alignSelf: "center" },
 });

@@ -1,0 +1,17 @@
+package iuh.fit.edu.backend.modules.user.repository;
+
+import iuh.fit.edu.backend.modules.user.entity.BlackListUser;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.stereotype.Repository;
+
+@Repository
+public interface BlackListUserRepository extends JpaRepository<BlackListUser,Long> {
+    @Query("""
+       select count(b) > 0
+       from BlackListUser b
+       where b.idToken = :token
+          or b.refreshToken = :token
+    """)
+    boolean existsByAnyToken(String token);
+}

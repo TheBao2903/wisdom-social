@@ -14,12 +14,12 @@ export default function ProfileTabSwitcher({ value, onChange }: Props) {
         <View style={styles.container}>
             <TabButton
                 active={value === "posts"}
-                icon="grid-outline"
+                icon="grid"
                 onPress={() => onChange("posts")}
             />
             <TabButton
                 active={value === "saved"}
-                icon="bookmark-outline"
+                icon="bookmark"
                 onPress={() => onChange("saved")}
             />
         </View>
@@ -41,8 +41,8 @@ function TabButton({
             style={[styles.tab, active && styles.tabActive]}
         >
             <Ionicons
-                name={icon}
-                size={22}
+                name={icon as any}
+                size={24}
                 color={active ? colors.text : colors.textMuted}
             />
         </Pressable>
@@ -53,17 +53,17 @@ const styles = StyleSheet.create({
     container: {
         flexDirection: "row",
         borderTopWidth: 1,
-        borderBottomWidth: 1,
-        borderColor: colors.border,
+        borderTopColor: colors.border,
         backgroundColor: colors.white,
     },
     tab: {
         flex: 1,
         alignItems: "center",
-        paddingVertical: spacing.sm,
+        paddingVertical: spacing.md,
+        borderBottomWidth: 1,
+        borderBottomColor: "transparent",
     },
     tabActive: {
-        borderBottomWidth: 2,
         borderBottomColor: colors.text,
     },
 });

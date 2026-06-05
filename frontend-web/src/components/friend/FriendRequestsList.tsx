@@ -1,5 +1,6 @@
 import { useCallback } from "react";
 import { UserPlus, Loader2, AlertCircle, RefreshCw } from "lucide-react";
+import toast from "react-hot-toast";
 import { useFriendData } from "../../contexts/FriendDataContext";
 import FriendRequestItem from "./FriendRequestItem";
 
@@ -20,18 +21,20 @@ export default function FriendRequestsList({ onRequestHandled }: FriendRequestsL
     const handleAccept = useCallback(async (userId: number) => {
         const success = await acceptRequest(userId);
         if (success) {
+            toast.success("Đã chấp nhận lời mời kết bạn");
             onRequestHandled?.();
         } else {
-            alert("Không thể chấp nhận lời mời. Vui lòng thử lại.");
+            toast.error("Không thể chấp nhận lời mời. Vui lòng thử lại.");
         }
     }, [acceptRequest, onRequestHandled]);
 
     const handleReject = useCallback(async (userId: number) => {
         const success = await rejectRequest(userId);
         if (success) {
+            toast.success("Đã từ chối lời mời");
             onRequestHandled?.();
         } else {
-            alert("Không thể từ chối lời mời. Vui lòng thử lại.");
+            toast.error("Không thể từ chối lời mời. Vui lòng thử lại.");
         }
     }, [rejectRequest, onRequestHandled]);
 

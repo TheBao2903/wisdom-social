@@ -1,4 +1,5 @@
 import type { Message } from "@/types/chat";
+import { buildS3Url } from "@/utils/s3";
 
 export const MENU_WIDTH = 232;
 export const MENU_HORIZONTAL_MARGIN = 12;
@@ -16,16 +17,54 @@ export const RIGHT_SCROLL_CUE_MARGIN = 8;
 export const JUMP_SCROLL_LOCK_MS = 1500;
 export const JUMP_AUTO_PAGING_SUPPRESS_MS = 2600;
 export const QUICK_EMOJIS = [
-    "😀", "😂", "😍", "🥰", "😘", "😊", "😉", "😎", "😭", "😡",
-    "😮", "🤔", "🙏", "👍", "👎", "👏", "🔥", "💯", "🎉", "❤️",
-    "💙", "💚", "💛", "🧡", "💜", "🤍", "🤎", "💔", "✨", "🌟",
-    "😴", "🤯", "😅", "😇", "🤗", "😋", "🙌", "👌", "🤝", "🎵",
+    "😀",
+    "😂",
+    "😍",
+    "🥰",
+    "😘",
+    "😊",
+    "😉",
+    "😎",
+    "😭",
+    "😡",
+    "😮",
+    "🤔",
+    "🙏",
+    "👍",
+    "👎",
+    "👏",
+    "🔥",
+    "💯",
+    "🎉",
+    "❤️",
+    "💙",
+    "💚",
+    "💛",
+    "🧡",
+    "💜",
+    "🤍",
+    "🤎",
+    "💔",
+    "✨",
+    "🌟",
+    "😴",
+    "🤯",
+    "😅",
+    "😇",
+    "🤗",
+    "😋",
+    "🙌",
+    "👌",
+    "🤝",
+    "🎵",
 ];
 
 export type ContextMenuState = {
     messageId: string;
     top: number;
     left: number;
+    mine: boolean;
+    minStackTop: number;
 };
 
 export type ReplyComposerState = {
@@ -37,6 +76,9 @@ export type ReplyComposerState = {
 export type MediaViewerState = {
     type: "IMAGE" | "VIDEO";
     url: string;
+    items?: string[];
+    index?: number;
+    conversationId?: number;
 };
 
 export type AudioProgress = {
@@ -61,32 +103,10 @@ export type PinSystemRunRenderMeta = {
 
 export const contextActions = [
     { key: "copy", label: "Copy tin nhan", icon: "copy-outline" },
-    { key: "pin", label: "Ghim tin nhan", icon: "pin-outline" },
+    { key: "pin", label: "Ghim tin nhan", icon: "attach-outline" },
     { key: "reply", label: "Tra loi", icon: "return-up-back-outline" },
+    { key: "forward", label: "Chuyen tiep", icon: "return-up-forward-outline" },
     { key: "divider-1", divider: true },
-    {
-        key: "save",
-        label: "Danh dau tin nhan",
-        icon: "bookmark-outline",
-    },
-    { key: "divider-2", divider: true },
-    {
-        key: "select-many",
-        label: "Chon nhieu tin nhan",
-        icon: "list-outline",
-    },
-    {
-        key: "details",
-        label: "Xem chi tiet",
-        icon: "information-circle-outline",
-    },
-    {
-        key: "more",
-        label: "Tuy chon khac",
-        icon: "ellipsis-horizontal-outline",
-        hasArrow: true,
-    },
-    { key: "divider-3", divider: true },
     {
         key: "unsend",
         label: "Thu hoi",
@@ -122,8 +142,7 @@ export function formatFileSize(value?: number): string {
 
 export function resolveMediaUrl(value?: string): string {
     if (!value) return "";
-    if (/^https?:\/\//i.test(value)) return value;
-    return value;
+    return buildS3Url(value) ?? "";
 }
 
 export function isLikelyStoragePathOrUrl(value?: string): boolean {
@@ -139,8 +158,8 @@ export function isLikelyStoragePathOrUrl(value?: string): boolean {
 export function resolveAttachmentUrls(message: Message): string[] {
     const attachmentUrls = Array.isArray(message.attachments)
         ? message.attachments
-              .map((attachment) => resolveMediaUrl(attachment.url))
-              .filter(Boolean)
+            .map((attachment) => resolveMediaUrl(attachment.url))
+            .filter(Boolean)
         : [];
 
     if (attachmentUrls.length > 0) return attachmentUrls;
@@ -206,7 +225,16 @@ export function getFileBadgeLabel(fileName?: string): string {
 }
 
 export function resolvePinSystemPreview(message: Message): string {
+    let content = "";
+    if (message.replyInfo?.type === "VIDEO") {
+        content = "1 tin nhắn video";
+    }
+    if (message.replyInfo?.type === "IMAGE") {
+        content = "1 tin nhắn ảnh";
+    }
+
     const source =
+        content ||
         message.replyInfo?.content ||
         message.content ||
         message.attachments?.[0]?.fileName ||
@@ -218,6 +246,7 @@ export function resolvePinSystemPreview(message: Message): string {
 }
 
 export function parseCallMeta(message: Message): {
+    callType: "audio" | "video";
     icon: "call-outline" | "call" | "videocam-outline" | "close-circle-outline";
     iconColor: string;
     title: string;
@@ -252,19 +281,20 @@ export function parseCallMeta(message: Message): {
             : formatMessageTime(message.createdAt) || "Cuoc goi";
 
     return {
+        callType: isVideo ? "video" : "audio",
         icon: isMissed
             ? "close-circle-outline"
             : isVideo
-              ? "videocam-outline"
-              : "call-outline",
+                ? "videocam-outline"
+                : "call-outline",
         iconColor: isMissed ? "#EF4444" : "#10B981",
         title: isVideo ? "Cuoc goi video" : "Cuoc goi thoai",
         subtitle,
     };
 }
 
-export function isPinSystemMessageType(type?: Message["type"]): boolean {
-    return type === "SYSTEM_PIN" || type === "SYSTEM_UPIN";
+export function isSystemMessageType(type?: Message["type"]): boolean {
+    return !!type?.startsWith("SYSTEM_");
 }
 
 export function buildReplyPreview(message: Message): string {

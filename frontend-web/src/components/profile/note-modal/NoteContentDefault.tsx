@@ -1,0 +1,17 @@
+export const NOTE_PLACEHOLDERS: string[] = [
+  "Thinking out loud...",
+  "Just a random spark.",
+  "Current status: Off the grid.",
+  "Lost in the clouds.",
+  "Chasing the golden hour.",
+  "A thought for the stars.",
+  "Brain.exe is loading...",
+  "Manifesting greatness.",
+  "Focus mode: ON.",
+  "A secret for the void.",
+  "Reading between the lines.",
+  "Silent but busy.",
+  "Main character energy.",
+  "Overthinking in progress...",
+  "Send coffee and vibes.",
+];

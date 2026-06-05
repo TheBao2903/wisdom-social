@@ -2,13 +2,13 @@ import { useState, useEffect } from "react";
 import { Link } from "react-router-dom";
 import { Trash2, Loader2, AlertCircle } from "lucide-react";
 import userService from "../services/userService";
-import { User } from "../types";
+import type { User } from "../types";
 
 export default function UserManagement() {
     const [users, setUsers] = useState<User[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState("");
-    const [deletingUserId, setDeletingUserId] = useState<string | null>(null);
+    const [deletingUserId, setDeletingUserId] = useState<number | null>(null);
 
     useEffect(() => {
         loadUsers();
@@ -28,7 +28,7 @@ export default function UserManagement() {
         }
     };
 
-    const handleDeleteUser = async (userId: string, username: string) => {
+    const handleDeleteUser = async (userId: number, username: string) => {
         const confirmed = window.confirm(
             `Bạn có chắc chắn muốn xóa user "${username}"? Hành động này không thể hoàn tác.`
         );
@@ -93,7 +93,7 @@ export default function UserManagement() {
                             >
                                 <div className="flex items-center gap-4 flex-1">
                                     <img
-                                        src={user.avatar || "https://i.pravatar.cc/150"}
+                                        src={user.avatarUrl || "https://i.pravatar.cc/150"}
                                         alt={user.username}
                                         className="w-12 h-12 rounded-full object-cover"
                                     />

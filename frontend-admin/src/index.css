@@ -1,0 +1,79 @@
+@import "tailwindcss";
+
+/*
+ * Màu chủ đạo của Admin Console: #1677FF.
+ * Admin đang dùng tông indigo (chính) + purple/violet (ở gradient logo/nút).
+ * Override cả ba palette về cùng một ramp sinh từ #1677FF (indigo-500 = #1677FF)
+ * nên mọi class indigo, purple, violet tự đổi sang màu này, kể cả gradient,
+ * mà không phải sửa từng component.
+ */
+@theme {
+  /* primary ramp (#1677FF) */
+  --color-indigo-50: #e6f4ff;
+  --color-indigo-100: #bae0ff;
+  --color-indigo-200: #91caff;
+  --color-indigo-300: #69b1ff;
+  --color-indigo-400: #4096ff;
+  --color-indigo-500: #1677ff;
+  --color-indigo-600: #0958d9;
+  --color-indigo-700: #003eb3;
+  --color-indigo-800: #002c8c;
+  --color-indigo-900: #001d66;
+  --color-indigo-950: #00153d;
+
+  /* purple/violet map vào cùng ramp để gradient cũng theo màu chủ đạo */
+  --color-purple-50: #e6f4ff;
+  --color-purple-100: #bae0ff;
+  --color-purple-200: #91caff;
+  --color-purple-300: #69b1ff;
+  --color-purple-400: #4096ff;
+  --color-purple-500: #1677ff;
+  --color-purple-600: #0958d9;
+  --color-purple-700: #003eb3;
+  --color-purple-800: #002c8c;
+  --color-purple-900: #001d66;
+  --color-purple-950: #00153d;
+
+  --color-violet-50: #e6f4ff;
+  --color-violet-100: #bae0ff;
+  --color-violet-200: #91caff;
+  --color-violet-300: #69b1ff;
+  --color-violet-400: #4096ff;
+  --color-violet-500: #1677ff;
+  --color-violet-600: #0958d9;
+  --color-violet-700: #003eb3;
+  --color-violet-800: #002c8c;
+  --color-violet-900: #001d66;
+  --color-violet-950: #00153d;
+}
+
+:root {
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  color-scheme: light;
+}
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: #f5f7fb;
+  color: #0f172a;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}

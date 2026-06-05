@@ -1,40 +1,46 @@
 {
-    "expo": {
-        "name": "frontend-mobile",
-        "slug": "frontend-mobile",
-        "version": "1.0.0",
-        "orientation": "portrait",
-        "scheme": "frontendmobile",
-        "userInterfaceStyle": "automatic",
-        "newArchEnabled": true,
-        "ios": {
-            "supportsTablet": true,
-            "infoPlist": {
-                "NSCameraUsageDescription": "Ứng dụng cần quyền truy cập camera để quét mã QR đăng nhập."
-            }
-        },
-        "android": {
-            "edgeToEdgeEnabled": true,
-            "predictiveBackGestureEnabled": false,
-            "permissions": ["CAMERA"]
-        },
-        "web": {
-            "output": "static"
-        },
-        "plugins": [
-            "expo-router",
-            "expo-splash-screen",
-            "expo-secure-store",
-            [
-                "expo-camera",
-                {
-                    "cameraPermission": "Ứng dụng cần quyền truy cập camera để quét mã QR đăng nhập."
-                }
-            ]
-        ],
-        "experiments": {
-            "typedRoutes": true,
-            "reactCompiler": true
+  "expo": {
+    "name": "frontend-mobile",
+    "slug": "frontend-mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "scheme": "frontendmobile",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSCameraUsageDescription": "Ứng dụng cần quyền truy cập camera để quét mã QR đăng nhập."
+      }
+    },
+    "android": {
+      "package": "com.nguyentinh.frontendmobile",
+      "edgeToEdgeEnabled": true,
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "CAMERA",
+        "RECORD_AUDIO",
+        "WAKE_LOCK"
+      ]
+    },
+    "web": {
+      "output": "static"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-splash-screen",
+      "expo-secure-store",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Ứng dụng cần quyền truy cập camera để quét mã QR đăng nhập."
         }
+      ],
+      "@react-native-community/datetimepicker"
+    ],
+    "experiments": {
+      "typedRoutes": true,
+      "reactCompiler": true
     }
+  }
 }

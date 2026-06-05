@@ -2,12 +2,16 @@ import type {
     Conversation,
     ConversationMember,
     Message,
+    MessageType,
 } from "../services/chatService";
 
 export interface PinnedMessageDetail {
     messageId: string;
     pinnerId: number;
     pinnedAt: string;
+    originalSenderId?: number;
+    type?: MessageType;
+    content?: string;
 }
 
 export interface ConversationPagingState {
@@ -18,6 +22,16 @@ export interface ConversationPagingState {
 }
 
 export type MembersByUserId = Record<number, ConversationMember>;
+export interface ActiveCallRuntimeState {
+    callId: string;
+    conversationId: number;
+    callType: "audio" | "video";
+    userId: number;
+}
+interface RemovePendingRequestsOptions {
+    requestIds?: number[];
+    userIds?: number[];
+}
 
 class ChatRuntimeStore {
     // conversations: snapshot metadata của từng cuộc trò chuyện (tên, type, lastMessage,...)
@@ -42,6 +56,7 @@ class ChatRuntimeStore {
         number,
         ConversationPagingState
     >();
+    private activeCall: ActiveCallRuntimeState | null = null;
 
     private createDefaultPagingState(): ConversationPagingState {
         return {
@@ -62,6 +77,38 @@ class ChatRuntimeStore {
 
     setConversation(conversationId: number, conversation: Conversation): void {
         this.conversations.set(conversationId, conversation);
+    }
+
+    removePendingRequests(
+        conversationId: number,
+        options: RemovePendingRequestsOptions,
+    ): Conversation | null {
+        const previous = this.getConversation(conversationId);
+        if (!previous) return null;
+
+        const requestIds = new Set(
+            (options.requestIds ?? [])
+                .map((requestId) => Number(requestId))
+                .filter((requestId) => Number.isFinite(requestId)),
+        );
+        const userIds = new Set(
+            (options.userIds ?? [])
+                .map((userId) => Number(userId))
+                .filter((userId) => Number.isFinite(userId)),
+        );
+
+        const next = {
+            ...previous,
+            pendingRequests:
+                previous.pendingRequests?.filter(
+                    (request) =>
+                        !requestIds.has(Number(request.id)) &&
+                        !userIds.has(Number(request.userId)),
+                ) ?? previous.pendingRequests,
+        };
+
+        this.conversations.set(conversationId, next);
+        return next;
     }
 
     setMembers(conversationId: number, members: MembersByUserId): void {
@@ -142,6 +189,14 @@ class ChatRuntimeStore {
     clearConversationRuntime(conversationId: number): void {
         this.messagesByConversation.delete(conversationId);
         this.pagingByConversation.delete(conversationId);
+    }
+
+    setActiveCall(call: ActiveCallRuntimeState | null): void {
+        this.activeCall = call;
+    }
+
+    getActiveCall(): ActiveCallRuntimeState | null {
+        return this.activeCall;
     }
 }
 

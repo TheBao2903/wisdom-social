@@ -1,10 +1,13 @@
 import { useState, useEffect, useCallback } from "react";
 import { Link } from "react-router-dom";
 import { Users, Loader2, AlertCircle, UserMinus, RefreshCw } from "lucide-react";
+import toast from "react-hot-toast";
 import friendService from "../../services/friendService";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { buildS3Url } from "../../utils/s3";
 import type { User } from "../../types";
+import { usePresenceStatus } from "../../hooks/usePresenceStatus";
+import ConfirmModal from "../common/ConfirmModal";
 
 interface FriendsListProps {
     userId: string;
@@ -38,12 +41,14 @@ export default function FriendsList({
     const [localLoading, setLocalLoading] = useState(true);
     const [localError, setLocalError] = useState("");
     const [unfriendingId, setUnfriendingId] = useState<number | null>(null);
+    const [unfriendTarget, setUnfriendTarget] = useState<{ id: number; username: string } | null>(null);
 
     // Use external data if provided, otherwise use local state
     const useExternal = externalFriends !== undefined;
     const friends = useExternal ? externalFriends : localFriends;
     const loading = useExternal ? (externalLoading ?? false) : localLoading;
     const error = useExternal ? (externalError ?? "") : localError;
+    const presenceByUserId = usePresenceStatus(friends.map((friend) => friend.id));
 
     // Load friends locally (only if not using external data)
     const loadFriends = useCallback(async () => {
@@ -74,22 +79,24 @@ export default function FriendsList({
         }
     }, [onRefresh, loadFriends]);
 
-    const handleUnfriend = useCallback(async (friendId: number, friendUsername: string) => {
+    const handleUnfriend = useCallback((friendId: number, friendUsername: string) => {
         if (!currentUser?.id) return;
+        setUnfriendTarget({ id: friendId, username: friendUsername });
+    }, [currentUser?.id]);
 
-        const confirmed = window.confirm(
-            `Bạn có chắc muốn hủy kết bạn với ${friendUsername}?`
-        );
-        if (!confirmed) return;
-
+    const doUnfriend = useCallback(async () => {
+        if (!unfriendTarget || !currentUser?.id) return;
+        const { id: friendId, username: friendUsername } = unfriendTarget;
+        setUnfriendTarget(null);
         setUnfriendingId(friendId);
         try {
             if (onUnfriend) {
                 const success = await onUnfriend(friendId);
                 if (success) {
+                    toast.success(`Đã hủy kết bạn với ${friendUsername}`);
                     onFriendRemoved?.(friendId);
                 } else {
-                    alert("Không thể hủy kết bạn. Vui lòng thử lại.");
+                    toast.error("Không thể hủy kết bạn. Vui lòng thử lại.");
                 }
             } else {
                 await friendService.cancelFriendRequest({
@@ -97,15 +104,16 @@ export default function FriendsList({
                     receivedId: friendId,
                 });
                 setLocalFriends(prev => prev.filter(f => f.id !== friendId));
+                toast.success(`Đã hủy kết bạn với ${friendUsername}`);
                 onFriendRemoved?.(friendId);
             }
         } catch (err: any) {
             console.error("Error unfriending:", err);
-            alert("Không thể hủy kết bạn. Vui lòng thử lại.");
+            toast.error("Không thể hủy kết bạn. Vui lòng thử lại.");
         } finally {
             setUnfriendingId(null);
         }
-    }, [currentUser?.id, onFriendRemoved, onUnfriend]);
+    }, [unfriendTarget, currentUser?.id, onFriendRemoved, onUnfriend]);
 
     if (loading) {
         return (
@@ -149,6 +157,16 @@ export default function FriendsList({
 
     return (
         <div className="bg-white dark:bg-[#121212] rounded-lg border border-gray-200 dark:border-[#262626]">
+            <ConfirmModal
+                open={!!unfriendTarget}
+                title="Hủy kết bạn"
+                message={`Bạn có chắc muốn hủy kết bạn với ${unfriendTarget?.username}?`}
+                confirmText="Hủy kết bạn"
+                cancelText="Không"
+                variant="danger"
+                onConfirm={doUnfriend}
+                onCancel={() => setUnfriendTarget(null)}
+            />
             <div className="px-6 py-4 border-b border-gray-200 dark:border-[#262626]">
                 <h2 className="text-lg font-semibold dark:text-white">
                     Bạn bè ({friends.length})
@@ -165,11 +183,19 @@ export default function FriendsList({
                             to={`/profile/${friend.username}`}
                             className="flex flex-col items-center w-full"
                         >
-                            <img
-                                src={buildS3Url(friend.avatarUrl) || friend.avatarUrl || "https://i.pravatar.cc/150"}
-                                alt={friend.username}
-                                className="w-20 h-20 rounded-full object-cover mb-3"
-                            />
+                            <div className="relative mb-3">
+                                <img
+                                    src={buildS3Url(friend.avatarUrl) || friend.avatarUrl || "https://i.pravatar.cc/150"}
+                                    alt={friend.username}
+                                    className="w-20 h-20 rounded-full object-cover"
+                                />
+                                {presenceByUserId[Number(friend.id)]?.online && (
+                                    <span
+                                        className="absolute bottom-1 right-1 h-4 w-4 rounded-full border-2 border-white bg-green-500 dark:border-[#121212]"
+                                        title="Dang hoat dong"
+                                    />
+                                )}
+                            </div>
                             <p className="font-semibold dark:text-white text-center truncate w-full">
                                 {friend.username}
                             </p>

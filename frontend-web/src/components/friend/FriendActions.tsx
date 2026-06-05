@@ -1,6 +1,8 @@
+import { useState, useEffect, useRef } from "react";
 import { UserPlus, UserMinus, UserCheck, Clock, Loader2, X } from "lucide-react";
 import { useFriendStatus, type FriendshipStatus } from "../../hooks/useFriendStatus";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
+import ConfirmModal from "../common/ConfirmModal";
 
 interface FriendActionsProps {
     targetUserId: number;
@@ -9,6 +11,8 @@ interface FriendActionsProps {
     showText?: boolean;
     layout?: "horizontal" | "vertical";
     onStatusChange?: (status: FriendshipStatus) => void;
+    onFriendAccepted?: () => void;
+    onFriendRemoved?: () => void;
 }
 
 export default function FriendActions({
@@ -18,6 +22,8 @@ export default function FriendActions({
     showText = true,
     layout = "horizontal",
     onStatusChange,
+    onFriendAccepted,
+    onFriendRemoved,
 }: FriendActionsProps) {
     const currentUser = useCurrentUser();
     const {
@@ -29,6 +35,21 @@ export default function FriendActions({
         cancelRequest,
         unfriend,
     } = useFriendStatus(targetUserId);
+
+    // Notify parent whenever status settles (not just on user action)
+    const onStatusChangeRef = useRef(onStatusChange);
+    useEffect(() => { onStatusChangeRef.current = onStatusChange; });
+    useEffect(() => {
+        if (status !== "loading") onStatusChangeRef.current?.(status);
+    }, [status]);
+
+    const [confirmModal, setConfirmModal] = useState<{
+        title: string;
+        message: string;
+        confirmText: string;
+        variant: "danger" | "warning" | "default";
+        action: () => Promise<void>;
+    } | null>(null);
 
     // Size classes (defined early so loading state can use them)
     const sizeClasses = {
@@ -76,49 +97,77 @@ export default function FriendActions({
         const success = await acceptRequest();
         if (success) {
             onStatusChange?.("friends");
+            onFriendAccepted?.();
         }
     };
 
-    const handleRejectRequest = async () => {
-        const confirmed = window.confirm(
-            `Bạn có chắc muốn từ chối lời mời kết bạn${targetUsername ? ` từ ${targetUsername}` : ""}?`
-        );
-        if (!confirmed) return;
-
-        const success = await rejectRequest();
-        if (success) {
-            onStatusChange?.("none");
-        }
+    const handleRejectRequest = () => {
+        setConfirmModal({
+            title: "Từ chối lời mời",
+            message: `Bạn có chắc muốn từ chối lời mời kết bạn${targetUsername ? ` từ ${targetUsername}` : ""}?`,
+            confirmText: "Từ chối",
+            variant: "warning",
+            action: async () => {
+                const success = await rejectRequest();
+                if (success) onStatusChange?.("none");
+            },
+        });
     };
 
-    const handleCancelRequest = async () => {
-        const confirmed = window.confirm("Bạn có chắc muốn hủy lời mời kết bạn?");
-        if (!confirmed) return;
-
-        const success = await cancelRequest();
-        if (success) {
-            onStatusChange?.("none");
-        }
+    const handleCancelRequest = () => {
+        setConfirmModal({
+            title: "Hủy lời mời kết bạn",
+            message: "Bạn có chắc muốn hủy lời mời kết bạn đã gửi?",
+            confirmText: "Hủy lời mời",
+            variant: "warning",
+            action: async () => {
+                const success = await cancelRequest();
+                if (success) onStatusChange?.("none");
+            },
+        });
     };
 
-    const handleUnfriend = async () => {
-        const confirmed = window.confirm(
-            `Bạn có chắc muốn hủy kết bạn${targetUsername ? ` với ${targetUsername}` : ""}?`
-        );
-        if (!confirmed) return;
-
-        const success = await unfriend();
-        if (success) {
-            onStatusChange?.("none");
-        }
+    const handleUnfriend = () => {
+        setConfirmModal({
+            title: "Hủy kết bạn",
+            message: `Bạn có chắc muốn hủy kết bạn${targetUsername ? ` với ${targetUsername}` : ""}?`,
+            confirmText: "Hủy kết bạn",
+            variant: "danger",
+            action: async () => {
+                const success = await unfriend();
+                if (success) {
+                    onStatusChange?.("none");
+                    onFriendRemoved?.();
+                }
+            },
+        });
     };
 
     const containerClass = layout === "vertical" ? "flex flex-col gap-2" : "flex flex-row gap-2";
+
+    const modal = confirmModal && (
+        <ConfirmModal
+            open
+            title={confirmModal.title}
+            message={confirmModal.message}
+            confirmText={confirmModal.confirmText}
+            cancelText="Hủy"
+            variant={confirmModal.variant}
+            onConfirm={async () => {
+                const act = confirmModal.action;
+                setConfirmModal(null);
+                await act();
+            }}
+            onCancel={() => setConfirmModal(null)}
+        />
+    );
 
     // Render based on status
     switch (status) {
         case "none":
             return (
+                <>
+                {modal}
                 <button
                     onClick={handleSendRequest}
                     disabled={loading}
@@ -131,10 +180,13 @@ export default function FriendActions({
                     )}
                     {showText && <span>Kết bạn</span>}
                 </button>
+                </>
             );
 
         case "pending_sent":
             return (
+                <>
+                {modal}
                 <button
                     onClick={handleCancelRequest}
                     disabled={loading}
@@ -147,12 +199,14 @@ export default function FriendActions({
                     )}
                     {showText && <span>Đã gửi lời mời</span>}
                 </button>
+                </>
             );
 
         case "pending_received":
             return (
+                <>
+                {modal}
                 <div className={containerClass}>
-                    {/* Accept Button */}
                     <button
                         onClick={handleAcceptRequest}
                         disabled={loading}
@@ -166,7 +220,6 @@ export default function FriendActions({
                         {showText && <span>Chấp nhận</span>}
                     </button>
 
-                    {/* Reject Button */}
                     <button
                         onClick={handleRejectRequest}
                         disabled={loading}
@@ -180,10 +233,13 @@ export default function FriendActions({
                         {showText && <span>Từ chối</span>}
                     </button>
                 </div>
+                </>
             );
 
         case "friends":
             return (
+                <>
+                {modal}
                 <button
                     onClick={handleUnfriend}
                     disabled={loading}
@@ -196,9 +252,14 @@ export default function FriendActions({
                     )}
                     {showText && <span>Bạn bè</span>}
                 </button>
+                </>
             );
 
-        default:
+        case "blocked":
+        case "blocked_by":
             return null;
+
+        default:
+            return modal ?? null;
     }
 }

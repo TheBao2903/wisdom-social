@@ -13,6 +13,7 @@ import websocketService, {
     type CallSignalPayload,
     type CallStatus,
 } from "../services/websocket";
+import chatRuntimeStore from "../stores/chatRuntimeStore";
 
 export type CallType = "audio" | "video";
 
@@ -20,19 +21,31 @@ interface ActiveCall {
     callId: string;
     callType: CallType;
     remoteUserIds: number[];
+    participantUserIds: number[];
+    hostUserId: number;
     remoteName: string;
     remoteAvatar?: string;
     status: CallStatus;
     isCaller: boolean;
 }
 
+interface RejoinableCall {
+    callId: string;
+    callType: CallType;
+    participantUserIds: number[];
+}
+
 interface UseCallOptions {
     conversationId: number;
     userId: number;
+    callerName?: string;
+    callerAvatar?: string;
     targetUserId?: number;
     targetUserIds?: number[];
     targetName?: string;
     targetAvatar?: string;
+    pendingIncomingCall?: CallSignalPayload | null;
+    onPendingIncomingCallConsumed?: () => void;
     onCallMessageSaved?: (message: Message) => void;
 }
 
@@ -44,6 +57,7 @@ const CALLER_RINGTONE_SRC = "/1.mp3";
 const RECEIVER_RINGTONE_SRC = "/2.mp3";
 const UNANSWERED_CALL_TIMEOUT_MS = 20_000;
 const STOP_ALL_CALL_AUDIO_EVENT = "call:stop-all-audio";
+export const MAX_CALL_PARTICIPANTS = 8;
 
 function createCallId() {
     if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
@@ -52,14 +66,83 @@ function createCallId() {
     return `call-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+function getSignalParticipantUserIds(signal: CallSignalPayload): number[] {
+    const direct = signal.participantUserIds;
+    if (direct?.length) return direct.filter(Number.isFinite);
+
+    const candidate = signal.candidate as
+        | { participantUserIds?: unknown }
+        | undefined;
+    if (!Array.isArray(candidate?.participantUserIds)) return [];
+
+    return candidate.participantUserIds
+        .map((id) => Number(id))
+        .filter(Number.isFinite);
+}
+
+function getSignalJoiningUserId(signal: CallSignalPayload): number | null {
+    const candidate = signal.candidate as { joiningUserId?: unknown } | undefined;
+    const id = Number(candidate?.joiningUserId);
+    return Number.isFinite(id) ? id : null;
+}
+
+function getSignalHostUserId(signal: CallSignalPayload): number | null {
+    const candidate = signal.candidate as { hostUserId?: unknown } | undefined;
+    const id = Number(candidate?.hostUserId);
+    return Number.isFinite(id) ? id : null;
+}
+
+function getSignalCallerInfo(signal: CallSignalPayload): {
+    callerName?: string;
+    callerAvatar?: string;
+} {
+    const candidate = signal.candidate as
+        | { callerName?: unknown; callerAvatar?: unknown }
+        | undefined;
+    return {
+        callerName:
+            typeof candidate?.callerName === "string"
+                ? candidate.callerName
+                : undefined,
+        callerAvatar:
+            typeof candidate?.callerAvatar === "string"
+                ? candidate.callerAvatar
+                : undefined,
+    };
+}
+
+function getSignalReason(signal: CallSignalPayload): string | null {
+    const candidate = signal.candidate as { reason?: unknown } | undefined;
+    return typeof candidate?.reason === "string" ? candidate.reason : null;
+}
+
+function buildCallMetadata(
+    participantUserIds: number[],
+    joiningUserId?: number,
+    hostUserId?: number,
+    callerInfo?: { callerName?: string; callerAvatar?: string },
+): Record<string, unknown> {
+    return {
+        participantUserIds: Array.from(new Set(participantUserIds)),
+        ...(joiningUserId != null ? { joiningUserId } : {}),
+        ...(hostUserId != null ? { hostUserId } : {}),
+        ...(callerInfo?.callerName ? { callerName: callerInfo.callerName } : {}),
+        ...(callerInfo?.callerAvatar ? { callerAvatar: callerInfo.callerAvatar } : {}),
+    };
+}
+
 export function useCall(options: UseCallOptions) {
     const {
         conversationId,
         userId,
+        callerName,
+        callerAvatar,
         targetUserId,
         targetUserIds,
         targetName,
         targetAvatar,
+        pendingIncomingCall,
+        onPendingIncomingCallConsumed,
     } = options;
     const { onCallMessageSaved } = options;
 
@@ -78,6 +161,9 @@ export function useCall(options: UseCallOptions) {
     const [remoteStreams, setRemoteStreams] = useState<
         Array<{ userId: number; stream: MediaStream }>
     >([]);
+    const [rejoinableCall, setRejoinableCall] =
+        useState<RejoinableCall | null>(null);
+    const [busyCallUserId, setBusyCallUserId] = useState<number | null>(null);
     const [durationSeconds, setDurationSeconds] = useState(0);
     const [micEnabled, setMicEnabled] = useState(true);
     const [cameraEnabled, setCameraEnabled] = useState(true);
@@ -85,6 +171,9 @@ export function useCall(options: UseCallOptions) {
 
     const peerConnectionsRef = useRef<Map<number, RTCPeerConnection>>(
         new Map(),
+    );
+    const remoteStreamsRef = useRef<Array<{ userId: number; stream: MediaStream }>>(
+        [],
     );
     const localStreamRef = useRef<MediaStream | null>(null);
     const pendingIceCandidatesRef = useRef<
@@ -106,6 +195,9 @@ export function useCall(options: UseCallOptions) {
     const screenTrackRef = useRef<MediaStreamTrack | null>(null);
     const cameraTrackBeforeShareRef = useRef<MediaStreamTrack | null>(null);
     const incomingNotificationRef = useRef<Notification | null>(null);
+    const activeCallRequestAtRef = useRef(0);
+    const activeCallRequestCallIdRef = useRef<string | null>(null);
+    const rejoinProbeTimerRef = useRef<number | null>(null);
 
     useEffect(() => {
         durationSecondsRef.current = durationSeconds;
@@ -114,6 +206,30 @@ export function useCall(options: UseCallOptions) {
     useEffect(() => {
         incomingCallRef.current = incomingCall;
     }, [incomingCall]);
+
+    useEffect(() => {
+        remoteStreamsRef.current = remoteStreams;
+    }, [remoteStreams]);
+
+    useEffect(() => {
+        if (activeCall) {
+            chatRuntimeStore.setActiveCall({
+                callId: activeCall.callId,
+                conversationId,
+                callType: activeCall.callType,
+                userId,
+            });
+            return;
+        }
+
+        const currentRuntimeCall = chatRuntimeStore.getActiveCall();
+        if (
+            currentRuntimeCall?.conversationId === conversationId &&
+            currentRuntimeCall.userId === userId
+        ) {
+            chatRuntimeStore.setActiveCall(null);
+        }
+    }, [activeCall, conversationId, userId]);
 
     const clearDurationTimer = useCallback(() => {
         if (durationTimerRef.current != null) {
@@ -465,6 +581,9 @@ export function useCall(options: UseCallOptions) {
         pc.ontrack = null;
         pc.close();
         peerConnectionsRef.current.delete(remoteUserId);
+        setRemoteStreams((prev) =>
+            prev.filter((item) => item.userId !== remoteUserId),
+        );
     }, []);
 
     const cleanupPeer = useCallback(() => {
@@ -606,6 +725,7 @@ export function useCall(options: UseCallOptions) {
         const stream = await navigator.mediaDevices.getUserMedia(constraints);
         setLocalStream(stream);
         localStreamRef.current = stream;
+        setRejoinableCall(null);
 
         const hasVideoTrack = stream.getVideoTracks().length > 0;
         setCameraEnabled(hasVideoTrack && stream.getVideoTracks()[0].enabled);
@@ -698,37 +818,12 @@ export function useCall(options: UseCallOptions) {
         }
     }, [conversationId, resolvedTargetUserIds, userId]);
 
-    const startCall = useCallback(
-        async (callType: CallType) => {
-            if (activeCallRef.current) return;
-
-            const remoteUserIds = await resolveCallTargetUserIds();
-            if (!remoteUserIds.length) return;
-
-            const stream = await createLocalStream(callType);
-            if (!stream) return;
-
-            const callId = createCallId();
-
-            const nextCall: ActiveCall = {
-                callId,
-                callType,
-                remoteUserIds,
-                remoteName:
-                    remoteUserIds.length > 1
-                        ? `Nhóm (${remoteUserIds.length} người)`
-                        : targetName ?? "Người dùng",
-                remoteAvatar: targetAvatar,
-                status: "calling",
-                isCaller: true,
-            };
-
-            setActiveCall(nextCall);
-            activeCallRef.current = nextCall;
-            setDurationSeconds(0);
-            callSavedRef.current = false;
-            startCallerTone();
-
+    const placeOutgoingCallToUsers = useCallback(
+        async (
+            callId: string,
+            callType: CallType,
+            remoteUserIds: number[],
+        ) => {
             await Promise.all(
                 remoteUserIds.map(async (remoteUserId) => {
                     const pc = createPeerConnection(
@@ -747,19 +842,76 @@ export function useCall(options: UseCallOptions) {
                         fromUserId: userId,
                         targetUserId: remoteUserId,
                         sdp: offer,
+                        candidate: buildCallMetadata(
+                            activeCallRef.current?.participantUserIds ?? [
+                                userId,
+                            ],
+                            undefined,
+                            activeCallRef.current?.hostUserId ?? userId,
+                            { callerName, callerAvatar },
+                        ),
                     });
 
                     await flushQueuedIceCandidates(callId, remoteUserId);
                 }),
             );
+        },
+        [
+            conversationId,
+            createPeerConnection,
+            flushQueuedIceCandidates,
+            callerAvatar,
+            callerName,
+            userId,
+        ],
+    );
+
+    const startCall = useCallback(
+        async (callType: CallType, selectedUserIds?: number[]) => {
+            if (activeCallRef.current) return;
+
+            const targetIds = selectedUserIds?.length
+                ? selectedUserIds
+                : await resolveCallTargetUserIds();
+            const remoteUserIds = Array.from(
+                new Set(targetIds.filter((id) => id !== userId)),
+            ).slice(0, MAX_CALL_PARTICIPANTS - 1);
+            if (!remoteUserIds.length) return;
+
+            const stream = await createLocalStream(callType);
+            if (!stream) return;
+
+            const callId = createCallId();
+
+            const nextCall: ActiveCall = {
+                callId,
+                callType,
+                remoteUserIds,
+                participantUserIds: [userId],
+                hostUserId: userId,
+                remoteName:
+                    remoteUserIds.length > 1
+                        ? `Nhóm (${remoteUserIds.length} người)`
+                        : targetName ?? "Người dùng",
+                remoteAvatar: targetAvatar,
+                status: "calling",
+                isCaller: true,
+            };
+
+            setActiveCall(nextCall);
+            activeCallRef.current = nextCall;
+            setRejoinableCall(null);
+            setDurationSeconds(0);
+            callSavedRef.current = false;
+            startCallerTone();
+
+            await placeOutgoingCallToUsers(callId, callType, remoteUserIds);
 
             startUnansweredTimeout(callId, callType, remoteUserIds);
         },
         [
-            conversationId,
             createLocalStream,
-            createPeerConnection,
-            flushQueuedIceCandidates,
+            placeOutgoingCallToUsers,
             resolveCallTargetUserIds,
             startUnansweredTimeout,
             targetAvatar,
@@ -769,40 +921,394 @@ export function useCall(options: UseCallOptions) {
         ],
     );
 
-    const acceptIncomingCall = useCallback(async () => {
-        if (!incomingCall) return;
+    const inviteUsersToCall = useCallback(
+        async (userIds: number[]) => {
+            const currentCall = activeCallRef.current;
+            if (!currentCall || !localStreamRef.current) return false;
 
-        const callType = incomingCall.callType;
+            const existingIds = new Set(currentCall.remoteUserIds);
+            const nextRemoteUserIds = Array.from(
+                new Set(
+                    userIds.filter(
+                        (id) => id !== userId && !existingIds.has(id),
+                    ),
+                ),
+            ).slice(
+                0,
+                Math.max(
+                    0,
+                    MAX_CALL_PARTICIPANTS - 1 - currentCall.remoteUserIds.length,
+                ),
+            );
+
+            if (!nextRemoteUserIds.length) return false;
+
+            await placeOutgoingCallToUsers(
+                currentCall.callId,
+                currentCall.callType,
+                nextRemoteUserIds,
+            );
+
+            setActiveCall((prev) => {
+                if (!prev) return prev;
+                const next = {
+                    ...prev,
+                    remoteUserIds: Array.from(
+                        new Set([...prev.remoteUserIds, ...nextRemoteUserIds]),
+                    ),
+                    participantUserIds: prev.participantUserIds,
+                    remoteName:
+                        prev.remoteUserIds.length + nextRemoteUserIds.length > 1
+                            ? `Nhóm (${prev.remoteUserIds.length + nextRemoteUserIds.length} người)`
+                            : prev.remoteName,
+                };
+                activeCallRef.current = next;
+                return next;
+            });
+
+            return true;
+        },
+        [placeOutgoingCallToUsers, userId],
+    );
+
+    const updateCallParticipants = useCallback(
+        (
+            participantUserIds: number[],
+            options: { preserveInvitedRemoteIds?: boolean } = {},
+        ) => {
+            const normalizedParticipantIds = Array.from(
+                new Set(participantUserIds.filter(Number.isFinite)),
+            );
+            if (!normalizedParticipantIds.length) return;
+
+            setActiveCall((prev) => {
+                if (!prev) return prev;
+                const participantRemoteUserIds = normalizedParticipantIds.filter(
+                    (id) => id !== userId,
+                );
+                const remoteUserIds = options.preserveInvitedRemoteIds === false
+                    ? participantRemoteUserIds
+                    : Array.from(
+                        new Set([
+                            ...prev.remoteUserIds,
+                            ...participantRemoteUserIds,
+                        ]),
+                    );
+                const next = {
+                    ...prev,
+                    remoteUserIds,
+                    participantUserIds: normalizedParticipantIds,
+                    remoteName:
+                        normalizedParticipantIds.length > 2
+                            ? `Nhóm (${normalizedParticipantIds.length} người)`
+                            : prev.remoteName,
+                };
+                activeCallRef.current = next;
+                return next;
+            });
+        },
+        [userId],
+    );
+
+    const sendParticipantSnapshot = useCallback(
+        (participantUserIds: number[]) => {
+            const currentCall = activeCallRef.current;
+            if (!currentCall) return;
+            const metadata = buildCallMetadata(
+                participantUserIds,
+                undefined,
+                currentCall.hostUserId,
+            );
+            participantUserIds
+                .filter((id) => id !== userId)
+                .forEach((targetUserId) => {
+                    websocketService.sendCallSignal({
+                        event: "call-participants",
+                        conversationId,
+                        callId: currentCall.callId,
+                        callType: currentCall.callType,
+                        fromUserId: userId,
+                        targetUserId,
+                        candidate: metadata,
+                    });
+                });
+        },
+        [conversationId, userId],
+    );
+
+    const notifyExistingParticipantsToConnect = useCallback(
+        (joiningUserId: number, participantUserIds: number[]) => {
+            const currentCall = activeCallRef.current;
+            if (!currentCall) return;
+            const metadata = buildCallMetadata(
+                participantUserIds,
+                joiningUserId,
+                currentCall.hostUserId,
+            );
+            participantUserIds
+                .filter((id) => id !== userId && id !== joiningUserId)
+                .forEach((targetUserId) => {
+                    websocketService.sendCallSignal({
+                        event: "join-call",
+                        conversationId,
+                        callId: currentCall.callId,
+                        callType: currentCall.callType,
+                        fromUserId: userId,
+                        targetUserId,
+                        candidate: metadata,
+                    });
+                });
+        },
+        [conversationId, userId],
+    );
+
+    const ensurePeerConnectionsForParticipants = useCallback(
+        async (
+            participantUserIds: number[],
+            options: {
+                repairMissingStreams?: boolean;
+                forceReconnect?: boolean;
+            } = {},
+        ) => {
+            const currentCall = activeCallRef.current;
+            if (!currentCall || currentCall.status !== "accepted") return;
+
+            const normalizedParticipantIds = Array.from(
+                new Set(participantUserIds.filter(Number.isFinite)),
+            );
+            if (normalizedParticipantIds.length < 2) return;
+            if (Math.min(...normalizedParticipantIds) !== userId) return;
+
+            const missingRemoteUserIds = normalizedParticipantIds.filter((id) => {
+                if (id === userId) return false;
+
+                const pc = peerConnectionsRef.current.get(id);
+                if (options.forceReconnect) {
+                    if (pc) closePeerConnectionForUser(id);
+                    return true;
+                }
+
+                if (!pc) return true;
+
+                const brokenConnection =
+                    pc.connectionState === "failed" ||
+                    pc.connectionState === "closed" ||
+                    pc.iceConnectionState === "failed" ||
+                    pc.iceConnectionState === "closed";
+                if (brokenConnection) {
+                    closePeerConnectionForUser(id);
+                    return true;
+                }
+
+                if (!options.repairMissingStreams) return false;
+
+                const hasLiveRemoteStream = remoteStreamsRef.current.some(
+                    (item) =>
+                        item.userId === id &&
+                        item.stream
+                            .getTracks()
+                            .some((track) => track.readyState === "live"),
+                );
+                if (hasLiveRemoteStream) return false;
+
+                closePeerConnectionForUser(id);
+                return true;
+            });
+            if (!missingRemoteUserIds.length) return;
+
+            await placeOutgoingCallToUsers(
+                currentCall.callId,
+                currentCall.callType,
+                missingRemoteUserIds,
+            );
+        },
+        [closePeerConnectionForUser, placeOutgoingCallToUsers, userId],
+    );
+
+    const schedulePeerRepairForParticipants = useCallback(
+        (
+            participantUserIds: number[],
+            options: {
+                repairMissingStreams?: boolean;
+                forceReconnect?: boolean;
+            } = { repairMissingStreams: true },
+        ) => {
+            const delays = options.forceReconnect ? [300, 1200, 3000] : [1200];
+            delays.forEach((delay) => {
+                window.setTimeout(() => {
+                    void ensurePeerConnectionsForParticipants(
+                        participantUserIds,
+                        options,
+                    );
+                }, delay);
+            });
+        },
+        [ensurePeerConnectionsForParticipants],
+    );
+
+    const getRemainingParticipantIds = useCallback(
+        (currentCall: ActiveCall, leavingUserId: number) =>
+            Array.from(
+                new Set([
+                    userId,
+                    ...currentCall.participantUserIds,
+                    ...currentCall.remoteUserIds,
+                ]),
+            ).filter((id) => Number.isFinite(id) && id !== leavingUserId),
+        [userId],
+    );
+
+    const continueCallAfterParticipantLeft = useCallback(
+        (
+            currentCall: ActiveCall,
+            remoteUserId: number,
+            remainingParticipants: number[],
+        ) => {
+            const remainingRemoteUserIds = remainingParticipants.filter(
+                (id) => id !== userId,
+            );
+            const nextHostUserId = remainingParticipants.includes(
+                currentCall.hostUserId,
+            )
+                ? currentCall.hostUserId
+                : Math.min(...remainingParticipants);
+
+            closePeerConnectionForUser(remoteUserId);
+
+            const nextCall: ActiveCall = {
+                ...currentCall,
+                remoteUserIds: remainingRemoteUserIds,
+                participantUserIds: remainingParticipants,
+                hostUserId: nextHostUserId,
+                remoteName:
+                    remainingParticipants.length > 2
+                        ? `Nhóm (${remainingParticipants.length} người)`
+                        : currentCall.remoteName,
+            };
+
+            activeCallRef.current = nextCall;
+            setActiveCall(nextCall);
+            sendParticipantSnapshot(remainingParticipants);
+            void ensurePeerConnectionsForParticipants(remainingParticipants, {
+                forceReconnect: true,
+            });
+            schedulePeerRepairForParticipants(remainingParticipants, {
+                forceReconnect: true,
+            });
+        },
+        [
+            closePeerConnectionForUser,
+            ensurePeerConnectionsForParticipants,
+            schedulePeerRepairForParticipants,
+            sendParticipantSnapshot,
+            userId,
+        ],
+    );
+
+    const acceptPeerOffer = useCallback(
+        async (signal: CallSignalPayload) => {
+            const currentCall = activeCallRef.current;
+            if (!currentCall || currentCall.callId !== signal.callId) return;
+            if (signal.fromUserId === userId) return;
+
+            const pc = createPeerConnection(
+                signal.fromUserId,
+                signal.callId,
+                signal.callType,
+            );
+            if (signal.sdp) {
+                await pc.setRemoteDescription(
+                    new RTCSessionDescription(signal.sdp),
+                );
+            }
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
+            await flushQueuedIceCandidates(signal.callId, signal.fromUserId);
+
+            const participantUserIds = Array.from(
+                new Set([
+                    ...currentCall.participantUserIds,
+                    ...getSignalParticipantUserIds(signal),
+                    signal.fromUserId,
+                    userId,
+                ]),
+            );
+            updateCallParticipants(participantUserIds);
+
+            websocketService.sendCallSignal({
+                event: "answer-call",
+                conversationId,
+                callId: signal.callId,
+                callType: signal.callType,
+                fromUserId: userId,
+                targetUserId: signal.fromUserId,
+                sdp: answer,
+                candidate: buildCallMetadata(
+                    participantUserIds,
+                    undefined,
+                    currentCall.hostUserId,
+                ),
+            });
+        },
+        [
+            conversationId,
+            createPeerConnection,
+            flushQueuedIceCandidates,
+            updateCallParticipants,
+            userId,
+        ],
+    );
+
+    const acceptIncomingSignal = useCallback(async (signal: CallSignalPayload) => {
+        if (activeCallRef.current) return;
+
+        const callType = signal.callType;
         await createLocalStream(callType);
 
         const pc = createPeerConnection(
-            incomingCall.fromUserId,
-            incomingCall.callId,
+            signal.fromUserId,
+            signal.callId,
             callType,
         );
 
-        if (incomingCall.sdp) {
+        if (signal.sdp) {
             await pc.setRemoteDescription(
-                new RTCSessionDescription(incomingCall.sdp),
+                new RTCSessionDescription(signal.sdp),
             );
         }
 
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
-        await flushQueuedIceCandidates(incomingCall.callId, incomingCall.fromUserId);
+        await flushQueuedIceCandidates(signal.callId, signal.fromUserId);
+
+        const participantUserIds = Array.from(
+            new Set([
+                ...getSignalParticipantUserIds(signal),
+                signal.fromUserId,
+                userId,
+            ]),
+        );
+        const hostUserId = getSignalHostUserId(signal) ?? signal.fromUserId;
+        const callerInfo = getSignalCallerInfo(signal);
 
         const nextCall: ActiveCall = {
-            callId: incomingCall.callId,
+            callId: signal.callId,
             callType,
-            remoteUserIds: [incomingCall.fromUserId],
-            remoteName: targetName ?? `Người dùng ${incomingCall.fromUserId}`,
-            remoteAvatar: targetAvatar,
+            remoteUserIds: [signal.fromUserId],
+            participantUserIds,
+            hostUserId,
+            remoteName:
+                callerInfo.callerName ??
+                targetName ??
+                `Người dùng ${signal.fromUserId}`,
+            remoteAvatar: callerInfo.callerAvatar ?? targetAvatar,
             status: "accepted",
             isCaller: false,
         };
 
         setActiveCall(nextCall);
         activeCallRef.current = nextCall;
+        setRejoinableCall(null);
         setIncomingCall(null);
         stopReceiverTone();
         setDurationSeconds(0);
@@ -811,23 +1317,46 @@ export function useCall(options: UseCallOptions) {
         websocketService.sendCallSignal({
             event: "answer-call",
             conversationId,
-            callId: incomingCall.callId,
+            callId: signal.callId,
             callType,
             fromUserId: userId,
-            targetUserId: incomingCall.fromUserId,
+            targetUserId: signal.fromUserId,
             sdp: answer,
+            candidate: buildCallMetadata(
+                participantUserIds,
+                undefined,
+                hostUserId,
+            ),
         });
     }, [
         conversationId,
         createLocalStream,
         createPeerConnection,
         flushQueuedIceCandidates,
-        incomingCall,
         startDurationTimer,
         targetAvatar,
         targetName,
         userId,
         stopReceiverTone,
+    ]);
+
+    const acceptIncomingCall = useCallback(async () => {
+        if (!incomingCall) return;
+        await acceptIncomingSignal(incomingCall);
+    }, [acceptIncomingSignal, incomingCall]);
+
+    useEffect(() => {
+        if (!pendingIncomingCall) return;
+        if (pendingIncomingCall.conversationId !== conversationId) return;
+        if (activeCallRef.current) return;
+
+        onPendingIncomingCallConsumed?.();
+        void acceptIncomingSignal(pendingIncomingCall);
+    }, [
+        acceptIncomingSignal,
+        conversationId,
+        onPendingIncomingCallConsumed,
+        pendingIncomingCall,
     ]);
 
     const rejectIncomingCall = useCallback(() => {
@@ -856,13 +1385,33 @@ export function useCall(options: UseCallOptions) {
     const endCall = useCallback(async () => {
         const currentCall = activeCallRef.current;
         if (!currentCall) return;
+        const shouldOfferRejoin =
+            currentCall.hostUserId !== userId &&
+            currentCall.participantUserIds.length > 2 &&
+            currentCall.status === "accepted";
+        const nextRejoinableCall = shouldOfferRejoin
+            ? {
+                callId: currentCall.callId,
+                callType: currentCall.callType,
+                participantUserIds: currentCall.participantUserIds.filter(
+                    (id) => id !== userId,
+                ),
+            }
+            : null;
 
         // Stop local ringtone immediately, do not wait for persistence/network.
         stopCallerTone();
         stopReceiverTone();
         clearUnansweredTimeout();
 
-        currentCall.remoteUserIds.forEach((remoteUserId) => {
+        const targetUserIds = Array.from(
+            new Set([
+                ...currentCall.remoteUserIds,
+                ...currentCall.participantUserIds,
+            ]),
+        ).filter((id) => Number.isFinite(id) && id !== userId);
+
+        targetUserIds.forEach((remoteUserId) => {
             websocketService.sendCallSignal({
                 event: "end-call",
                 conversationId,
@@ -880,6 +1429,7 @@ export function useCall(options: UseCallOptions) {
         const elapsedSeconds = durationSecondsRef.current;
 
         resetCallState();
+        setRejoinableCall(nextRejoinableCall);
 
         if (shouldPersist) {
             void persistCallMessage(callType, "ended", elapsedSeconds);
@@ -895,6 +1445,24 @@ export function useCall(options: UseCallOptions) {
         stopReceiverTone,
         userId,
     ]);
+
+    const rejoinActiveCall = useCallback(async () => {
+        const call = rejoinableCall;
+        if (!call || activeCallRef.current) return;
+
+        activeCallRequestAtRef.current = Date.now();
+        activeCallRequestCallIdRef.current = call.callId;
+        call.participantUserIds.forEach((targetUserId) => {
+            websocketService.sendCallSignal({
+                event: "request-active-call",
+                conversationId,
+                callId: call.callId,
+                callType: call.callType,
+                fromUserId: userId,
+                targetUserId,
+            });
+        });
+    }, [conversationId, rejoinableCall, userId]);
 
     const toggleMic = useCallback(() => {
         const stream = localStreamRef.current;
@@ -940,10 +1508,130 @@ export function useCall(options: UseCallOptions) {
                 signal.event === "incoming-call" ||
                 signal.event === "call-user"
             ) {
+                if (currentCall?.callId === signal.callId) {
+                    await acceptPeerOffer(signal);
+                    return;
+                }
+
                 if (!currentCall) {
+                    const shouldAutoAccept =
+                        Date.now() - activeCallRequestAtRef.current < 8000 &&
+                        activeCallRequestCallIdRef.current === signal.callId &&
+                        getSignalParticipantUserIds(signal).length > 0;
+                    if (shouldAutoAccept) {
+                        activeCallRequestCallIdRef.current = null;
+                        await acceptIncomingSignal(signal);
+                        return;
+                    }
+
                     setIncomingCall(signal);
                     startReceiverTone();
                     notifyIncomingCall(signal);
+                } else {
+                    websocketService.sendCallSignal({
+                        event: "reject-call",
+                        conversationId,
+                        callId: signal.callId,
+                        callType: signal.callType,
+                        fromUserId: userId,
+                        targetUserId: signal.fromUserId,
+                        candidate: { reason: "busy" },
+                    });
+                }
+                return;
+            }
+
+            if (signal.event === "request-active-call") {
+                if (!currentCall || currentCall.status !== "accepted") return;
+                if (currentCall.participantUserIds.includes(signal.fromUserId)) {
+                    return;
+                }
+                const leaderId = Math.min(...currentCall.participantUserIds);
+                if (leaderId !== userId) return;
+
+                const participantUserIds = Array.from(
+                    new Set([...currentCall.participantUserIds, signal.fromUserId]),
+                );
+                updateCallParticipants(participantUserIds);
+                await placeOutgoingCallToUsers(currentCall.callId, currentCall.callType, [
+                    signal.fromUserId,
+                ]);
+                notifyExistingParticipantsToConnect(
+                    signal.fromUserId,
+                    participantUserIds,
+                );
+                sendParticipantSnapshot(participantUserIds);
+                void ensurePeerConnectionsForParticipants(participantUserIds, {
+                    forceReconnect: true,
+                });
+                schedulePeerRepairForParticipants(participantUserIds, {
+                    forceReconnect: true,
+                });
+                return;
+            }
+
+            if (signal.event === "check-active-call") {
+                if (!currentCall || currentCall.status !== "accepted") return;
+                websocketService.sendCallSignal({
+                    event: "call-participants",
+                    conversationId,
+                    callId: currentCall.callId,
+                    callType: currentCall.callType,
+                    fromUserId: userId,
+                    targetUserId: signal.fromUserId,
+                    candidate: buildCallMetadata(
+                        currentCall.participantUserIds,
+                        undefined,
+                        currentCall.hostUserId,
+                    ),
+                });
+                return;
+            }
+
+            if (signal.event === "join-call") {
+                if (!currentCall || currentCall.callId !== signal.callId) return;
+                const joiningUserId = getSignalJoiningUserId(signal);
+                if (!joiningUserId || joiningUserId === userId) return;
+
+                const participantUserIds = getSignalParticipantUserIds(signal);
+                updateCallParticipants(participantUserIds);
+                if (peerConnectionsRef.current.has(joiningUserId)) {
+                    closePeerConnectionForUser(joiningUserId);
+                }
+                await placeOutgoingCallToUsers(signal.callId, signal.callType, [
+                    joiningUserId,
+                ]);
+                schedulePeerRepairForParticipants(participantUserIds, {
+                    forceReconnect: true,
+                });
+                return;
+            }
+
+            if (signal.event === "call-participants") {
+                if (currentCall?.callId === signal.callId) {
+                    const participantUserIds =
+                        getSignalParticipantUserIds(signal);
+                    updateCallParticipants(participantUserIds);
+                    void ensurePeerConnectionsForParticipants(participantUserIds, {
+                        forceReconnect: true,
+                    });
+                    schedulePeerRepairForParticipants(participantUserIds, {
+                        forceReconnect: true,
+                    });
+                } else {
+                    const participantUserIds = getSignalParticipantUserIds(signal);
+                    if (
+                        participantUserIds.length > 1 &&
+                        !participantUserIds.includes(userId)
+                    ) {
+                        setRejoinableCall({
+                            callId: signal.callId,
+                            callType: signal.callType,
+                            participantUserIds,
+                        });
+                    } else if (participantUserIds.length <= 1) {
+                        setRejoinableCall(null);
+                    }
                 }
                 return;
             }
@@ -975,9 +1663,45 @@ export function useCall(options: UseCallOptions) {
                     await flushQueuedIceCandidates(signal.callId, remoteUserId);
                     clearUnansweredTimeout();
                     stopCallerTone();
+                    const wasAlreadyAccepted =
+                        currentCall.status === "accepted";
                     applyStatus("accepted");
-                    setDurationSeconds(0);
-                    startDurationTimer();
+                    const previousParticipantIds =
+                        currentCall.participantUserIds;
+                    const participantUserIds = Array.from(
+                        new Set([
+                            ...previousParticipantIds,
+                            ...getSignalParticipantUserIds(signal),
+                            remoteUserId,
+                            userId,
+                        ]),
+                    );
+                    const participantSetChanged =
+                        participantUserIds.length !==
+                        previousParticipantIds.length ||
+                        participantUserIds.some(
+                            (id) => !previousParticipantIds.includes(id),
+                        );
+                    updateCallParticipants(participantUserIds);
+                    if (participantSetChanged) {
+                        notifyExistingParticipantsToConnect(
+                            remoteUserId,
+                            participantUserIds,
+                        );
+                        sendParticipantSnapshot(participantUserIds);
+                        void ensurePeerConnectionsForParticipants(
+                            participantUserIds,
+                            { forceReconnect: true },
+                        );
+                        schedulePeerRepairForParticipants(participantUserIds, {
+                            forceReconnect: true,
+                        });
+                    }
+                    if (!wasAlreadyAccepted) {
+                        setDurationSeconds(0);
+                        durationSecondsRef.current = 0;
+                        startDurationTimer();
+                    }
                 }
                 return;
             }
@@ -990,32 +1714,58 @@ export function useCall(options: UseCallOptions) {
                     queueIceCandidate(
                         signal.callId,
                         remoteUserId,
-                        signal.candidate,
+                        signal.candidate as RTCIceCandidateInit,
                     );
                     return;
                 }
 
                 try {
-                    await pc.addIceCandidate(new RTCIceCandidate(signal.candidate));
+                    await pc.addIceCandidate(
+                        new RTCIceCandidate(
+                            signal.candidate as RTCIceCandidateInit,
+                        ),
+                    );
                 } catch {
                     queueIceCandidate(
                         signal.callId,
                         remoteUserId,
-                        signal.candidate,
+                        signal.candidate as RTCIceCandidateInit,
                     );
                 }
                 return;
             }
 
             if (signal.event === "reject-call") {
+                if (remoteUserId === currentCall.hostUserId) {
+                    const remainingParticipants = getRemainingParticipantIds(
+                        currentCall,
+                        remoteUserId,
+                    );
+                    if (remainingParticipants.length <= 1) {
+                        resetCallState();
+                        setRejoinableCall(null);
+                    } else {
+                        continueCallAfterParticipantLeft(
+                            currentCall,
+                            remoteUserId,
+                            remainingParticipants,
+                        );
+                    }
+                    return;
+                }
+
                 if (currentCall.isCaller) {
-                    const remaining = currentCall.remoteUserIds.filter(
-                        (id) => id !== remoteUserId,
+                    if (getSignalReason(signal) === "busy") {
+                        setBusyCallUserId(remoteUserId);
+                    }
+                    const remainingParticipants = getRemainingParticipantIds(
+                        currentCall,
+                        remoteUserId,
+                    );
+                    const remaining = remainingParticipants.filter(
+                        (id) => id !== userId,
                     );
                     closePeerConnectionForUser(remoteUserId);
-                    setRemoteStreams((prev) =>
-                        prev.filter((item) => item.userId !== remoteUserId),
-                    );
 
                     if (!remaining.length) {
                         stopCallerTone();
@@ -1029,31 +1779,64 @@ export function useCall(options: UseCallOptions) {
                     }
 
                     setActiveCall((prev) =>
-                        prev ? { ...prev, remoteUserIds: remaining } : prev,
+                        prev
+                            ? {
+                                ...prev,
+                                remoteUserIds: remaining,
+                                participantUserIds: remainingParticipants,
+                            }
+                            : prev,
                     );
                     activeCallRef.current = {
                         ...currentCall,
                         remoteUserIds: remaining,
+                        participantUserIds: remainingParticipants,
                     };
+                    sendParticipantSnapshot(remainingParticipants);
+                    void ensurePeerConnectionsForParticipants(
+                        remainingParticipants,
+                    );
+                    schedulePeerRepairForParticipants(remainingParticipants);
                 }
                 return;
             }
 
             if (signal.event === "end-call") {
-                if (!currentCall.isCaller) {
+                if (remoteUserId === currentCall.hostUserId) {
+                    resetCallState();
+                    setRejoinableCall(null);
+                    return;
+                }
+
+                const remainingParticipants = getRemainingParticipantIds(
+                    currentCall,
+                    remoteUserId,
+                );
+
+                if (!currentCall.isCaller && remainingParticipants.length <= 1) {
                     resetCallState();
                     return;
                 }
 
-                const remaining = currentCall.remoteUserIds.filter(
-                    (id) => id !== remoteUserId,
+                const remaining = remainingParticipants.filter(
+                    (id) => id !== userId,
                 );
                 closePeerConnectionForUser(remoteUserId);
-                setRemoteStreams((prev) =>
-                    prev.filter((item) => item.userId !== remoteUserId),
-                );
 
-                if (!remaining.length) {
+                if (remainingParticipants.length <= 1) {
+                    if (currentCall.hostUserId === userId) {
+                        remaining.forEach((targetUserId) => {
+                            websocketService.sendCallSignal({
+                                event: "end-call",
+                                conversationId,
+                                callId: currentCall.callId,
+                                callType: currentCall.callType,
+                                fromUserId: userId,
+                                targetUserId,
+                            });
+                        });
+                    }
+
                     stopCallerTone();
                     const elapsedSeconds = durationSecondsRef.current;
                     resetCallState();
@@ -1065,30 +1848,39 @@ export function useCall(options: UseCallOptions) {
                     return;
                 }
 
-                setActiveCall((prev) =>
-                    prev ? { ...prev, remoteUserIds: remaining } : prev,
+                continueCallAfterParticipantLeft(
+                    currentCall,
+                    remoteUserId,
+                    remainingParticipants,
                 );
-                activeCallRef.current = {
-                    ...currentCall,
-                    remoteUserIds: remaining,
-                };
             }
         },
         [
+            acceptIncomingSignal,
+            acceptPeerOffer,
             applyStatus,
             closePeerConnectionForUser,
+            continueCallAfterParticipantLeft,
             conversationId,
             clearIncomingNotification,
             flushQueuedIceCandidates,
+            ensurePeerConnectionsForParticipants,
+            getRemainingParticipantIds,
             notifyIncomingCall,
+            notifyExistingParticipantsToConnect,
             persistCallMessage,
+            placeOutgoingCallToUsers,
             queueIceCandidate,
             resetCallState,
             clearUnansweredTimeout,
+            schedulePeerRepairForParticipants,
+            sendParticipantSnapshot,
             startDurationTimer,
             startReceiverTone,
             stopCallerTone,
             stopReceiverTone,
+            updateCallParticipants,
+            userId,
         ],
     );
 
@@ -1147,22 +1939,81 @@ export function useCall(options: UseCallOptions) {
             void handleCallSignalRef.current?.(event);
         };
 
+        let disposed = false;
         const setup = async () => {
             if (!websocketService.isConnected()) {
                 await websocketService.connect();
             }
+            if (disposed) return;
             websocketService.subscribeToCallEvents(userId, onCallEvent);
+            const targetIds = await resolveCallTargetUserIds();
+            if (disposed || activeCallRef.current) return;
+            targetIds.forEach((targetUserId) => {
+                websocketService.sendCallSignal({
+                    event: "request-active-call",
+                    conversationId,
+                    callId: `conversation-${conversationId}`,
+                    callType: "audio",
+                    fromUserId: userId,
+                    targetUserId,
+                });
+            });
         };
 
         void setup();
 
         return () => {
+            disposed = true;
             websocketService.unsubscribeFromCallEvents(userId, onCallEvent);
         };
-    }, [userId]);
+    }, [conversationId, resolveCallTargetUserIds, userId]);
+
+    useEffect(() => {
+        if (rejoinProbeTimerRef.current != null) {
+            window.clearTimeout(rejoinProbeTimerRef.current);
+            rejoinProbeTimerRef.current = null;
+        }
+
+        if (!rejoinableCall) return;
+
+        rejoinableCall.participantUserIds.forEach((targetUserId) => {
+            websocketService.sendCallSignal({
+                event: "check-active-call",
+                conversationId,
+                callId: rejoinableCall.callId,
+                callType: rejoinableCall.callType,
+                fromUserId: userId,
+                targetUserId,
+            });
+        });
+
+        rejoinProbeTimerRef.current = window.setTimeout(() => {
+            setRejoinableCall(null);
+            rejoinProbeTimerRef.current = null;
+        }, 7000);
+
+        return () => {
+            if (rejoinProbeTimerRef.current != null) {
+                window.clearTimeout(rejoinProbeTimerRef.current);
+                rejoinProbeTimerRef.current = null;
+            }
+        };
+    }, [conversationId, rejoinableCall, userId]);
 
     useEffect(() => {
         return () => {
+            if (rejoinProbeTimerRef.current != null) {
+                window.clearTimeout(rejoinProbeTimerRef.current);
+                rejoinProbeTimerRef.current = null;
+            }
+            const currentRuntimeCall = chatRuntimeStore.getActiveCall();
+            if (
+                currentRuntimeCall?.conversationId === conversationId &&
+                currentRuntimeCall.userId === userId
+            ) {
+                chatRuntimeStore.setActiveCall(null);
+            }
+
             resetCallState();
             clearIncomingNotification();
 
@@ -1176,7 +2027,7 @@ export function useCall(options: UseCallOptions) {
                 receiverToneRef.current = null;
             }
         };
-    }, [clearIncomingNotification, resetCallState, stopTone]);
+    }, [clearIncomingNotification, conversationId, resetCallState, stopTone, userId]);
 
     const callStatus: CallStatus | null = activeCall?.status ?? null;
 
@@ -1204,16 +2055,22 @@ export function useCall(options: UseCallOptions) {
         cameraEnabled,
         isScreenSharing,
         isInCall,
+        rejoinableCall,
+        busyCallUserId,
         canToggleCamera,
         canShareScreen,
 
         startCall,
+        rejoinActiveCall,
+        clearBusyCallNotice: () => setBusyCallUserId(null),
         acceptIncomingCall,
         rejectIncomingCall,
         endCall,
         toggleMic,
         toggleCamera,
         toggleScreenShare,
+        inviteUsersToCall,
+        maxCallParticipants: MAX_CALL_PARTICIPANTS,
     };
 }
 

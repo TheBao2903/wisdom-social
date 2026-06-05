@@ -3,6 +3,7 @@ import { useState } from "react";
 import { CheckCircle2, Eye, EyeOff, Lock, Phone } from "lucide-react";
 import { register } from "../utils/auth";
 import { validateSignupForm } from "../utils/validation";
+import PasswordStrengthMeter from "../components/auth/PasswordStrengthMeter";
 
 export default function SignUp() {
     const navigate = useNavigate();
@@ -76,6 +77,7 @@ export default function SignUp() {
                             {showPassword ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
                         </button>
                     </div>
+                    <PasswordStrengthMeter password={password} />
                     <div className="flex items-center rounded-xl border border-gray-200 bg-white px-3">
                         <Lock className="h-4 w-4 text-blue-500" />
                         <input

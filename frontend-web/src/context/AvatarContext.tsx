@@ -1,4 +1,5 @@
-import { createContext, useContext, useState, useEffect, useRef, ReactNode } from "react";
+import { createContext, useContext, useState, useEffect, useRef } from "react";
+import type { ReactNode } from "react";
 import { useCurrentUser } from "../hooks/useCurrentUser";
 
 interface AvatarContextType {

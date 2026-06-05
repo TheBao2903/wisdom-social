@@ -1,5 +1,6 @@
 import { colors, spacing, typography } from "@/constants";
 import { Ionicons } from "@expo/vector-icons";
+import React from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
 type Action = {
@@ -10,17 +11,21 @@ type Action = {
 type Props = {
     title: string;
     leftAction?: Action;
+    leftActions?: Action[];
     rightActions?: Action[];
+    notificationBell?: React.ReactNode;
 };
 
 export default function AppHeader({
     title,
     leftAction,
+    leftActions = [],
     rightActions = [],
+    notificationBell,
 }: Props) {
     return (
         <View style={styles.container}>
-            <View style={styles.side}>
+            <View style={[styles.side, styles.left]}>
                 {leftAction ? (
                     <Pressable
                         onPress={leftAction.onPress}
@@ -34,6 +39,20 @@ export default function AppHeader({
                         />
                     </Pressable>
                 ) : null}
+                {leftActions.map((action, index) => (
+                    <Pressable
+                        key={`${action.icon}-${index}`}
+                        onPress={action.onPress}
+                        hitSlop={8}
+                        style={[styles.iconPressable, (leftAction || index > 0) && { marginLeft: spacing.xs }]}
+                    >
+                        <Ionicons
+                            name={action.icon}
+                            size={22}
+                            color={colors.text}
+                        />
+                    </Pressable>
+                ))}
             </View>
 
             <Text numberOfLines={1} style={styles.title}>
@@ -41,6 +60,7 @@ export default function AppHeader({
             </Text>
 
             <View style={[styles.side, styles.right]}>
+                {notificationBell}
                 {rightActions.map((action) => (
                     <Pressable
                         key={action.icon}
@@ -73,6 +93,11 @@ const styles = StyleSheet.create({
     },
     side: {
         minWidth: 68,
+    },
+    left: {
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "flex-start",
     },
     title: {
         flex: 1,

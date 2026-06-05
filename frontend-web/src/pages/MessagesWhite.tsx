@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import chatService, { type Conversation } from "../services/chatService";
 import ChatWindow from "../components/message/ChatWindow";
+import { useAuth } from "../contexts/AuthContext";
 
 export default function MessagesWhite() {
     const [searchQuery, setSearchQuery] = useState("");
@@ -10,9 +11,9 @@ export default function MessagesWhite() {
         number | null
     >(null);
 
-    // Tạm thời lấy userId từ url (sau có phần đăng nhập sẽ lấy từ context của security)
-    const query = new URLSearchParams(window.location.search);
-    const currentUserId = parseInt(query.get("userId") || "1");
+    // currentUserId: lấy từ AuthContext (security integration)
+    const { currentUser } = useAuth();
+    const currentUserId = currentUser?.id ?? 0;
 
     useEffect(() => {
         loadConversations();
@@ -143,7 +144,6 @@ export default function MessagesWhite() {
                         <ChatWindow
                             key={selectedConversationId}
                             conversationId={selectedConversationId}
-                            userId={currentUserId}
                         />
                     ) : (
                         <div className="flex items-center justify-center h-full">

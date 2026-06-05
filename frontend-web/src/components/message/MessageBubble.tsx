@@ -1,536 +1,218 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-    MoreVertical,
-    Undo2,
+    CheckCircle2,
+    ChevronLeft,
+    Clock,
     Copy,
-    Pin,
-    Reply,
-    Star,
+    CornerUpLeft,
+    CornerUpRight,
+    Download,
+    EyeOff,
+    ExternalLink,
+    File,
+    FileSpreadsheet,
+    FileText,
+    FileVideoCamera,
+    FolderOpen,
+    Image as ImageIcon,
     ListChecks,
-    Info,
-    ChevronRight,
-    Trash2,
+    Loader2,
+    Lock,
+    Mic,
+    MoreVertical,
     Paperclip,
-    Play,
-    Pause,
     Phone,
     PhoneOff,
+    Pin,
+    Play,
+    Plus,
+    Presentation,
+    ShieldCheck,
+    Settings,
+    Trash2,
+    Undo2,
+    Users,
     Video,
     VideoOff,
-    Mic,
-    FolderOpen,
-    Download,
-    File,
-    FileText,
-    FileSpreadsheet,
-    FileVideoCamera,
-    Presentation,
-    CheckCircle2,
-    Image as ImageIcon,
+    X,
 } from "lucide-react";
+import type { ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import toast from "react-hot-toast";
+import { useNavigate } from "react-router-dom";
 import type {
+    Conversation,
+    ConversationMember,
+    ConversationPreview,
+    InviteUserStatus,
     Message,
-    MessageAttachment,
     MessageType,
+    PollResponse,
 } from "../../services/chatService";
+import chatService from "../../services/chatService";
+import {
+    formatBytes,
+    getFileNameFromUrl,
+    getFileTypeBadge,
+    getFileTypePalette,
+    getReplyMediaType,
+    isAudioFile,
+    isDocumentCategory,
+    isEmojiOnly,
+    isGroupSystemType,
+    isImageFile,
+    isLikelyMediaSource,
+    parseReplyContent,
+    resolveFileCategory,
+    resolveLocalAvailabilityLabel,
+    resolveVideoPosterUrl,
+} from "../../utils/messageBubbleUtils";
+import { buildS3Url } from "../../utils/s3";
+import { buildSystemGroupMessage } from "../../utils/systemCreateGroupMessage";
+import {
+    LOCKED_ACCOUNT_AVATAR_URL,
+    LOCKED_ACCOUNT_NAME,
+} from "../../utils/lockedAccount";
+import AudioPlayer from "./AudioPlayer";
+import ReactionDetailModal from "./ReactionDetailModal";
 
-/**
- * Kiểm tra xem một chuỗi có chỉ chứa emoji (không có text khác) hay không
- * Regex bao gồm các dải Unicode của emoji phổ biến
- */
-function isEmojiOnly(text: string): boolean {
-    if (!text) return false;
-    // Dùng nhóm thay vì character class để tránh false-positive từ eslint.
-    const emojiRegex =
-        /^(?:\p{Emoji_Presentation}|\p{Extended_Pictographic}|\u200d|\ufe0f|\s)+$/u;
-    // Kiểm tra có ít nhất 1 emoji và không có ký tự text thường
-    const hasEmoji = /[\p{Emoji_Presentation}\p{Extended_Pictographic}]/u.test(
-        text,
-    );
-    return hasEmoji && emojiRegex.test(text.trim());
+function extractGroupInviteUrl(content: string): string | null {
+    const match = content.match(/https?:\/\/[^\s]+\/g\/[A-Za-z0-9_-]+/);
+    return match?.[0] ?? null;
 }
 
-/**
- * Tách tên file từ URL để hiển thị gọn trong các preview system message.
- */
-function getFileNameFromUrl(
-    url: string | undefined,
-    fallback = "tệp đính kèm",
-) {
-    if (!url) return fallback;
-    return url.split("/").pop()?.split("?")[0] ?? fallback;
+function extractGroupInviteToken(url: string): string | null {
+    const match = url.match(/\/g\/([A-Za-z0-9_-]+)/);
+    return match?.[1] ?? null;
 }
 
-function formatBytes(bytes?: number): string {
-    if (!bytes || bytes <= 0) return "";
-    const mb = bytes / (1024 * 1024);
-    if (mb < 1) return `${(bytes / 1024).toFixed(2)} KB`;
-    return `${mb.toFixed(2)} MB`;
+function isPollExpired(poll?: PollResponse | null): boolean {
+    if (!poll?.expiresAt) return false;
+    return new Date(poll.expiresAt).getTime() <= Date.now();
 }
 
-type FileCategory = "video" | "pdf" | "word" | "excel" | "ppt" | "other";
-
-const VIDEO_FILE_EXTENSIONS = new Set(["mp4", "mov", "avi", "mkv", "webm"]);
-const IMAGE_FILE_EXTENSIONS = new Set([
-    "jpg",
-    "jpeg",
-    "png",
-    "gif",
-    "webp",
-    "bmp",
-    "avif",
-    "heic",
-]);
-const AUDIO_FILE_EXTENSIONS = new Set([
-    "mp3",
-    "wav",
-    "ogg",
-    "aac",
-    "m4a",
-    "opus",
-    "weba",
-]);
-const WORD_FILE_EXTENSIONS = new Set(["doc", "docx"]);
-const EXCEL_FILE_EXTENSIONS = new Set(["xls", "xlsx"]);
-const PPT_FILE_EXTENSIONS = new Set(["ppt", "pptx"]);
-
-const WORD_MIME_TYPES = new Set([
-    "application/msword",
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-]);
-
-const EXCEL_MIME_TYPES = new Set([
-    "application/vnd.ms-excel",
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-]);
-
-const PPT_MIME_TYPES = new Set([
-    "application/vnd.ms-powerpoint",
-    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-]);
-
-interface ReplyMediaPayload {
-    type?: MessageType;
-    content?: string;
-    fileName?: string;
-    mimeType?: string;
+function formatPollEndLabel(value?: string | null, ended = false): string {
+    if (!value) return "";
+    const date = new Date(value);
+    if (!Number.isFinite(date.getTime())) return "";
+    const now = new Date();
+    const sameDay =
+        date.getFullYear() === now.getFullYear() &&
+        date.getMonth() === now.getMonth() &&
+        date.getDate() === now.getDate();
+    const time = date.toLocaleTimeString("vi-VN", {
+        hour: "2-digit",
+        minute: "2-digit",
+    });
+    const dayLabel = sameDay
+        ? "Hom nay"
+        : `ngay ${date.toLocaleDateString("vi-VN")}`;
+    return `${ended ? "Da ket thuc luc" : "Ket thuc luc"} ${time} ${dayLabel}`;
 }
 
-interface ParsedReplyContent {
-    sourceUrl?: string;
-    thumbnailUrl?: string;
-    posterUrl?: string;
-    fileName?: string;
-    mimeType?: string;
-    text?: string;
+function formatContextDay(value?: string | null): string {
+    if (!value) return "";
+    const date = new Date(value);
+    if (!Number.isFinite(date.getTime())) return "";
+    const now = new Date();
+    const sameDay =
+        date.getFullYear() === now.getFullYear() &&
+        date.getMonth() === now.getMonth() &&
+        date.getDate() === now.getDate();
+    return sameDay ? "Hom nay" : `ngay ${date.toLocaleDateString("vi-VN")}`;
 }
 
-function getFileExtension(fileName: string): string {
-    return fileName.split(".").pop()?.toLowerCase() ?? "";
+function isPollSystemType(type: MessageType): boolean {
+    return type.startsWith("SYSTEM_POLL_");
 }
 
-function normalizeMimeType(mimeType?: string): string {
-    if (!mimeType) return "";
-    return mimeType.split(";")[0]?.trim().toLowerCase() ?? "";
+function isAnonymousPollActorMessage(type: MessageType): boolean {
+    return type === "SYSTEM_POLL_VOTED" || type === "SYSTEM_POLL_CHANGED";
 }
 
-function isImageFile(fileName?: string, mimeType?: string): boolean {
-    const normalizedMime = normalizeMimeType(mimeType);
-    if (normalizedMime.startsWith("image/")) return true;
-
-    if (!fileName) return false;
-    const ext = getFileExtension(fileName);
-    return IMAGE_FILE_EXTENSIONS.has(ext);
+function buildPollSystemText(type: MessageType, title?: string | null, actorLabel = "Ban"): string {
+    const pollTitle = title?.trim() || "binh chon";
+    switch (type) {
+        case "SYSTEM_POLL_CREATED":
+            return `${actorLabel} tao cuoc binh chon moi: ${pollTitle}`;
+        case "SYSTEM_POLL_VOTED":
+            return `${actorLabel} tham gia cuoc binh chon: ${pollTitle}`;
+        case "SYSTEM_POLL_CHANGED":
+            return `${actorLabel} doi lua chon trong cuoc binh chon: ${pollTitle}`;
+        case "SYSTEM_POLL_CLOSED":
+            return `${actorLabel} khoa binh chon: ${pollTitle}`;
+        case "SYSTEM_POLL_PINNED":
+            return `${actorLabel} ghim binh chon: ${pollTitle}`;
+        default:
+            return pollTitle;
+    }
 }
 
-function isAudioFile(fileName?: string, mimeType?: string): boolean {
-    const normalizedMime = normalizeMimeType(mimeType);
-    if (normalizedMime.startsWith("audio/")) return true;
-
-    if (!fileName) return false;
-    const ext = getFileExtension(fileName);
-    return AUDIO_FILE_EXTENSIONS.has(ext);
+function resolveJoinedConversationId(
+    payload: Conversation | { message?: string },
+): number | null {
+    if (!payload || typeof payload !== "object") return null;
+    const record = payload as Record<string, unknown>;
+    const id = Number(record.conversationId ?? record.id);
+    return Number.isFinite(id) ? id : null;
 }
 
-function isVideoFile(fileName?: string, mimeType?: string): boolean {
-    if (isAudioFile(fileName, mimeType)) return false;
+function pickApiMessage(value: unknown): string | null {
+    if (typeof value === "string" && value.trim()) return value.trim();
+    if (!value || typeof value !== "object") return null;
 
-    const normalizedMime = normalizeMimeType(mimeType);
-    if (normalizedMime.startsWith("video/")) return true;
-
-    if (!fileName) return false;
-    const ext = getFileExtension(fileName);
-    return VIDEO_FILE_EXTENSIONS.has(ext);
-}
-
-function getReplyMediaType(
-    message?: ReplyMediaPayload | null,
-): "image" | "video" | "other" {
-    if (!message) return "other";
-
-    if (message.type === "IMAGE") return "image";
-    if (message.type === "VIDEO") return "video";
-    if (message.type === "AUDIO") return "other";
-
-    const candidateName = message.fileName || message.content;
-    if (isAudioFile(candidateName, message.mimeType)) return "other";
-    if (isImageFile(candidateName, message.mimeType)) return "image";
-    if (isVideoFile(candidateName, message.mimeType)) return "video";
-    return "other";
-}
-
-function isLikelyMediaSource(value?: string): boolean {
-    if (!value) return false;
-    const normalized = value.trim().toLowerCase();
-    if (!normalized) return false;
-
+    const record = value as Record<string, unknown>;
     return (
-        normalized.startsWith("http://") ||
-        normalized.startsWith("https://") ||
-        normalized.startsWith("blob:") ||
-        normalized.startsWith("data:") ||
-        normalized.startsWith("/") ||
-        normalized.includes("/") ||
-        normalized.includes(".jpg") ||
-        normalized.includes(".jpeg") ||
-        normalized.includes(".png") ||
-        normalized.includes(".gif") ||
-        normalized.includes(".webp") ||
-        normalized.includes(".mp4") ||
-        normalized.includes(".mov") ||
-        normalized.includes(".avi") ||
-        normalized.includes(".mkv") ||
-        normalized.includes(".webm")
+        pickApiMessage(record.message) ||
+        pickApiMessage(record.error) ||
+        pickApiMessage(record.data) ||
+        pickApiMessage(record.errors)
     );
 }
 
-function parseReplyContent(content?: string): ParsedReplyContent {
-    const raw = content?.trim();
-    if (!raw) return {};
-
-    if (raw.startsWith("{") && raw.endsWith("}")) {
-        try {
-            const parsed = JSON.parse(raw) as Record<string, unknown>;
-            const getString = (...keys: string[]) => {
-                for (const key of keys) {
-                    const value = parsed[key];
-                    if (typeof value === "string" && value.trim()) {
-                        return value;
-                    }
-                }
-                return undefined;
-            };
-
-            return {
-                sourceUrl: getString("url", "fileUrl", "src", "content"),
-                thumbnailUrl: getString(
-                    "thumbnailUrl",
-                    "thumbnail",
-                    "previewUrl",
-                ),
-                posterUrl: getString("posterUrl", "poster"),
-                fileName: getString("fileName", "name"),
-                mimeType: getString("mimeType", "type", "contentType"),
-                text: getString("text", "caption", "message"),
-            };
-        } catch {
-            // Fallback dùng raw content phía dưới.
-        }
+function extractApiErrorMessage(error: unknown): string | null {
+    if (error && typeof error === "object") {
+        const responseData = (error as { response?: { data?: unknown } })
+            .response?.data;
+        const fromResponse = pickApiMessage(responseData);
+        if (fromResponse) return fromResponse;
     }
 
-    return {
-        sourceUrl: raw,
-        fileName: getFileNameFromUrl(raw, ""),
-        text: raw,
-    };
-}
-
-function resolveFileCategory(
-    fileName: string,
-    mimeType?: string,
-    messageType?: MessageType,
-): FileCategory {
-    if (messageType === "VIDEO") return "video";
-
-    // Ưu tiên extension trước, sau đó mới fallback sang mimeType.
-    const ext = getFileExtension(fileName);
-    if (VIDEO_FILE_EXTENSIONS.has(ext)) return "video";
-    if (ext === "pdf") return "pdf";
-    if (WORD_FILE_EXTENSIONS.has(ext)) return "word";
-    if (EXCEL_FILE_EXTENSIONS.has(ext)) return "excel";
-    if (PPT_FILE_EXTENSIONS.has(ext)) return "ppt";
-
-    const normalizedMime = normalizeMimeType(mimeType);
-    if (!normalizedMime) return "other";
-
-    if (normalizedMime.startsWith("video/")) return "video";
-    if (normalizedMime === "application/pdf") return "pdf";
-    if (WORD_MIME_TYPES.has(normalizedMime)) return "word";
-    if (EXCEL_MIME_TYPES.has(normalizedMime)) return "excel";
-    if (PPT_MIME_TYPES.has(normalizedMime)) return "ppt";
-
-    return "other";
-}
-
-function getFileTypeBadge(fileCategory: FileCategory): string | null {
-    if (fileCategory === "pdf") return "PDF";
-    if (fileCategory === "word") return "WORD";
-    if (fileCategory === "excel") return "EXCEL";
-    if (fileCategory === "ppt") return "PPT";
-    if (fileCategory === "video") return "VIDEO";
-    return null;
-}
-
-function isDocumentCategory(fileCategory: FileCategory): boolean {
-    return fileCategory === "pdf" || fileCategory === "word";
-}
-
-function getFileTypePalette(fileCategory: FileCategory) {
-    if (fileCategory === "pdf") {
-        return {
-            iconBg: "bg-red-100 dark:bg-red-950",
-            iconText: "text-red-600 dark:text-red-300",
-            badgeBg: "bg-red-100 dark:bg-red-950",
-            badgeText: "text-red-700 dark:text-red-200",
-        };
-    }
-    if (fileCategory === "word") {
-        return {
-            iconBg: "bg-blue-100 dark:bg-blue-950",
-            iconText: "text-blue-600 dark:text-blue-300",
-            badgeBg: "bg-blue-100 dark:bg-blue-950",
-            badgeText: "text-blue-700 dark:text-blue-200",
-        };
-    }
-    if (fileCategory === "excel") {
-        return {
-            iconBg: "bg-emerald-100 dark:bg-emerald-950",
-            iconText: "text-emerald-600 dark:text-emerald-300",
-            badgeBg: "bg-emerald-100 dark:bg-emerald-950",
-            badgeText: "text-emerald-700 dark:text-emerald-200",
-        };
-    }
-    if (fileCategory === "ppt") {
-        return {
-            iconBg: "bg-orange-100 dark:bg-orange-950",
-            iconText: "text-orange-600 dark:text-orange-300",
-            badgeBg: "bg-orange-100 dark:bg-orange-950",
-            badgeText: "text-orange-700 dark:text-orange-200",
-        };
-    }
-    if (fileCategory === "video") {
-        return {
-            iconBg: "bg-sky-100 dark:bg-sky-950",
-            iconText: "text-sky-600 dark:text-sky-300",
-            badgeBg: "bg-sky-100 dark:bg-sky-950",
-            badgeText: "text-sky-700 dark:text-sky-200",
-        };
-    }
-
-    return {
-        iconBg: "bg-gray-200 dark:bg-gray-700",
-        iconText: "text-gray-600 dark:text-gray-300",
-        badgeBg: "bg-gray-200 dark:bg-gray-700",
-        badgeText: "text-gray-700 dark:text-gray-200",
-    };
-}
-
-function resolveLocalAvailabilityLabel(
-    attachment?: MessageAttachment,
-): string | null {
-    if (!attachment) return null;
-    const metadata = attachment as MessageAttachment & Record<string, unknown>;
-
-    const localBooleanKeys = [
-        "isLocal",
-        "existsOnDevice",
-        "availableOnDevice",
-        "isAvailableOnDevice",
-        "downloaded",
-    ];
-    if (localBooleanKeys.some((key) => metadata[key] === true)) {
-        return "Đã có trên máy";
-    }
-
-    const localStringKeys = ["localStatus", "status", "deviceStatus"];
-    const localStatusRaw = localStringKeys
-        .map((key) => metadata[key])
-        .find((value): value is string => typeof value === "string");
-
-    if (!localStatusRaw) return null;
-
-    const normalized = localStatusRaw.trim().toLowerCase();
-    if (!normalized) return null;
-
-    if (
-        normalized.includes("đã có trên máy") ||
-        normalized.includes("local") ||
-        normalized.includes("available") ||
-        normalized.includes("downloaded") ||
-        normalized.includes("device")
-    ) {
-        return "Đã có trên máy";
+    if (error instanceof Error && error.message.trim()) {
+        return error.message.trim();
     }
 
     return null;
 }
 
-function resolveVideoPosterUrl(
-    attachment?: MessageAttachment,
-): string | undefined {
-    if (!attachment) return undefined;
-    const metadata = attachment as MessageAttachment & Record<string, unknown>;
-    const posterKeys = ["thumbnailUrl", "thumbnail", "posterUrl", "poster"];
-
-    for (const key of posterKeys) {
-        const value = metadata[key];
-        if (typeof value === "string" && value.trim()) {
-            return value;
+function renderTextWithLinks(content: string, isOwn: boolean): ReactNode {
+    const parts = content.split(/(https?:\/\/[^\s]+)/g);
+    return parts.map((part, index) => {
+        if (!/^https?:\/\/[^\s]+$/.test(part)) {
+            return part;
         }
-    }
 
-    return undefined;
-}
-
-/* ─── Custom Audio Player (UI phát audio tin nhắn thoại) ─────────────────── */
-
-/**
- * AudioPlayer - Component tùy chỉnh để phát audio tin nhắn thoại
- *
- * Giao diện bao gồm:
- * - Nút Play/Pause tròn
- * - Waveform bars (fake, seeded theo URL để nhất quán)
- * - Thời gian hiện tại / tổng thời lượng
- *
- * Tính năng:
- * - Click waveform để seek (tua)
- * - Tự động reset về 0 khi audio kết thúc
- * - Màu sắc thay đổi theo isOwn (tin của mình vs tin người khác)
- */
-function AudioPlayer({ src, isOwn }: { src: string; isOwn: boolean }) {
-    const audioRef = useRef<HTMLAudioElement>(null);
-    const [playing, setPlaying] = useState(false);
-    const [currentTime, setCurrentTime] = useState(0);
-    const [duration, setDuration] = useState(0);
-
-    // Tạo waveform bars giả - seeded theo URL để mỗi tin nhắn có cùng 1 waveform
-    // (không decode thật audio vì tốn CPU, fake này đủ dùng cho UI)
-    const bars = useMemo(() => {
-        // Hash URL thành số seed cố định, tránh mutate biến trong render.
-        const seed = src
-            .split("")
-            .reduce((a, c) => (a * 31 + c.charCodeAt(0)) | 0, 17);
-        // Tạo 30 cột giả lập dựa trên seed + index để mỗi tin luôn ổn định.
-        return Array.from({ length: 30 }, (_, index) => {
-            const seeded = Math.imul(
-                seed ^ ((index + 1) * 2654435761),
-                1103515245,
-            );
-            return 15 + (Math.abs(seeded) % 70); // 15–85 %
-        });
-    }, [src]);
-
-    // Toggle play/pause
-    const togglePlay = useCallback(() => {
-        const a = audioRef.current;
-        if (!a) return;
-        if (playing) a.pause();
-        else void a.play();
-    }, [playing]);
-
-    // Xử lý seek - click vào waveform để tua đến vị trí đó
-    const handleSeek = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-        const a = audioRef.current;
-        if (!a || !a.duration) return;
-        const rect = e.currentTarget.getBoundingClientRect();
-        // Tính % vị trí click → tua audio đến % đó
-        a.currentTime = ((e.clientX - rect.left) / rect.width) * a.duration;
-    }, []);
-
-    // Phần trăm đã phát (để tô màu waveform bars)
-    const progress = duration > 0 ? currentTime / duration : 0;
-
-    // Format thời gian: "M:SS"
-    const fmt = (s: number) => {
-        const m = Math.floor(s / 60);
-        return `${m}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
-    };
-
-    return (
-        <div className="flex items-center gap-2.5 px-3 py-2.5 w-full min-w-55">
-            {/* Audio element ẩn - điều khiển qua ref */}
-            <audio
-                ref={audioRef}
-                src={src}
-                preload="metadata"
-                onPlay={() => setPlaying(true)}
-                onPause={() => setPlaying(false)}
-                onEnded={() => {
-                    setPlaying(false);
-                    setCurrentTime(0); // Reset về đầu khi kết thúc
+        return (
+            <a
+                key={`${part}-${index}`}
+                href={part}
+                target="_blank"
+                rel="noreferrer"
+                style={{
+                    textDecorationLine: "underline",
+                    textUnderlineOffset: "2px",
                 }}
-                onTimeUpdate={() =>
-                    setCurrentTime(audioRef.current?.currentTime ?? 0)
-                }
-                onLoadedMetadata={() =>
-                    setDuration(audioRef.current?.duration ?? 0)
-                }
-            />
-
-            {/* Nút Play / Pause tròn */}
-            <button
-                type="button"
-                onClick={togglePlay}
-                className={`shrink-0 w-9 h-9 rounded-full flex items-center justify-center transition-colors ${
-                    isOwn
-                        ? "bg-white/20 hover:bg-white/30 text-white" // Tin của mình: trắng mờ trên nền xanh
-                        : "bg-gray-900 hover:bg-gray-700 text-white dark:bg-gray-100 dark:hover:bg-white dark:text-gray-900" // Tin người khác: đen (light) / trắng (dark)
+                className={`font-medium hover:opacity-80 ${
+                    isOwn ? "text-white" : "text-blue-600 dark:text-blue-300"
                 }`}
+                onClick={(event) => event.stopPropagation()}
             >
-                {playing ? (
-                    <Pause size={16} fill="currentColor" />
-                ) : (
-                    <Play size={16} fill="currentColor" />
-                )}
-            </button>
-
-            {/* Waveform bars - click để seek */}
-            <div
-                className="flex-1 flex items-center gap-0.5 h-8 cursor-pointer"
-                onClick={handleSeek}
-            >
-                {bars.map((h, i) => {
-                    // Cột này đã phát chưa (dựa vào progress)
-                    const played = i / bars.length <= progress;
-                    return (
-                        <div
-                            key={i}
-                            className={`rounded-full flex-1 transition-colors ${
-                                played
-                                    ? isOwn
-                                        ? "bg-white" // Đã phát - tin của mình: trắng
-                                        : "bg-gray-900 dark:bg-gray-100" // Đã phát - tin người khác: đen/trắng
-                                    : isOwn
-                                      ? "bg-white/35" // Chưa phát - tin của mình: trắng mờ
-                                      : "bg-gray-300 dark:bg-gray-500" // Chưa phát - tin người khác: xám
-                            }`}
-                            style={{ height: `${h}%` }}
-                        />
-                    );
-                })}
-            </div>
-
-            {/* Hiển thị thời gian: currentTime nếu đang phát, duration nếu chưa phát */}
-            <span
-                className={`text-xs shrink-0 font-mono tabular-nums ${
-                    isOwn ? "text-blue-100" : "text-gray-700 dark:text-gray-300"
-                }`}
-            >
-                {currentTime > 0 ? fmt(currentTime) : fmt(duration)}
-            </span>
-        </div>
-    );
+                {part}
+            </a>
+        );
+    });
 }
+
+const LONG_TEXT_PREVIEW_LENGTH = 900;
 
 /* ─── MessageBubble ────────────────────────────────────────────────────────── */
 
@@ -556,15 +238,24 @@ export interface MessageBubbleProps {
     onPin: (messageId: string) => void;
     onUnpin: (messageId: string) => void;
     onReply: (message: Message) => void;
+    onForward?: (message: Message) => void;
     onJumpToMessage?: (messageId: string) => void;
     onRecall: (messageId: string) => void;
+    canRecallOwnMessages?: boolean;
     onRecallCall?: (callType: "audio" | "video") => void;
-    onDeleteForMe: (messageId: string) => void;
+    onDeleteForMe?: (messageId: string) => void;
+    onReaction?: (messageId: string, emoji: string) => void;
+    onOpenRequireApprovalDetails?: () => void;
+    onOpenPollMessage?: (messageId: string) => void;
+    openPollModalToken?: number;
+    onPollModalClose?: () => void;
     onMediaLoad?: () => void;
+    onOpenMediaViewer?: (url: string) => void;
     isFirstInGroup?: boolean;
     isLastInGroup?: boolean;
     isHighlighted?: boolean;
     currentUserId: number;
+    membersById?: Record<number, ConversationMember>;
 }
 
 export function MessageBubble({
@@ -579,21 +270,167 @@ export function MessageBubble({
     onPin,
     onUnpin,
     onReply,
+    onForward,
     onJumpToMessage,
     onRecall,
+    canRecallOwnMessages = true,
     onRecallCall,
     onDeleteForMe,
+    onReaction,
+    onOpenRequireApprovalDetails,
+    onOpenPollMessage,
+    openPollModalToken,
+    onPollModalClose,
     onMediaLoad,
+    onOpenMediaViewer,
     isFirstInGroup = true,
     isLastInGroup = true,
     isHighlighted = false,
     currentUserId,
+    membersById = {},
 }: MessageBubbleProps) {
+    const navigate = useNavigate();
     const [menuOpen, setMenuOpen] = useState(false);
+    const [reactionOpen, setReactionOpen] = useState(false);
+    const [reactionDetailOpen, setReactionDetailOpen] = useState(false);
+    const reactionRef = useRef<HTMLDivElement>(null);
+    const [inviteModalOpen, setInviteModalOpen] = useState(false);
+    const [inviteLoading, setInviteLoading] = useState(false);
+    const [inviteJoining, setInviteJoining] = useState(false);
+    const [inviteCancelling, setInviteCancelling] = useState(false);
+    const [inviteError, setInviteError] = useState("");
+    const [invitePreview, setInvitePreview] =
+        useState<ConversationPreview | null>(null);
+    const [inviteUserStatus, setInviteUserStatus] =
+        useState<InviteUserStatus | null>(null);
+    const [localPoll, setLocalPoll] = useState<PollResponse | null>(
+        message.poll ?? null,
+    );
+    const [pollUpdating, setPollUpdating] = useState(false);
+    const [pollModalOpen, setPollModalOpen] = useState(false);
+    const [pollDetailOpen, setPollDetailOpen] = useState(false);
+    const [pollSettingsOpen, setPollSettingsOpen] = useState(false);
+    const [pollCloseConfirmOpen, setPollCloseConfirmOpen] = useState(false);
+    const [pollAddingOption, setPollAddingOption] = useState(false);
+    const [pollDraftOptionIds, setPollDraftOptionIds] = useState<string[]>([]);
+    const [pollNewOptionText, setPollNewOptionText] = useState("");
+    const [, setPollClockTick] = useState(0);
+    const [textExpanded, setTextExpanded] = useState(false);
+    const shouldCollapseText =
+        message.type === "TEXT" &&
+        !message.isRecalled &&
+        message.content.length > LONG_TEXT_PREVIEW_LENGTH;
+    const visibleTextContent =
+        shouldCollapseText && !textExpanded
+            ? `${message.content.slice(0, LONG_TEXT_PREVIEW_LENGTH).trimEnd()}...`
+            : message.content;
+    const pollSelectionByIdRef = useRef<Record<string, string[]>>({});
+    const [menuPosition, setMenuPosition] = useState<{
+        top: number;
+        left?: number;
+        right?: number;
+        placement: "above" | "below";
+    } | null>(null);
     const menuRef = useRef<HTMLDivElement>(null);
+    const menuButtonRef = useRef<HTMLButtonElement>(null);
+
+    useEffect(() => {
+        const nextPoll = message.poll ?? null;
+        setLocalPoll((previousPoll) => {
+            if (!nextPoll || !previousPoll) {
+                return nextPoll;
+            }
+
+            const hasRememberedSelectedIds = Object.prototype.hasOwnProperty.call(
+                pollSelectionByIdRef.current,
+                nextPoll.id,
+            );
+            const rememberedSelectedIds = pollSelectionByIdRef.current[nextPoll.id];
+            const nextSelectedIds = nextPoll.currentUserOptionIds ?? [];
+            const previousSelectedIds = previousPoll.currentUserOptionIds ?? [];
+            const selectedIds =
+                hasRememberedSelectedIds
+                    ? rememberedSelectedIds
+                    : nextSelectedIds.length > 0
+                      ? nextSelectedIds
+                      : previousSelectedIds;
+
+            if (!hasRememberedSelectedIds && selectedIds.length === 0) {
+                return nextPoll;
+            }
+
+            const selectedSet = new Set(selectedIds);
+            return {
+                ...nextPoll,
+                currentUserOptionIds: selectedIds,
+                options: nextPoll.options.map((option) => ({
+                    ...option,
+                    selectedByCurrentUser:
+                        hasRememberedSelectedIds
+                            ? selectedSet.has(option.id)
+                            : option.selectedByCurrentUser ||
+                              selectedSet.has(option.id),
+                })),
+            };
+        });
+    }, [message.poll]);
+
+    useEffect(() => {
+        if (!pollModalOpen || !localPoll) return;
+        setPollDraftOptionIds(localPoll.currentUserOptionIds ?? []);
+    }, [localPoll, pollModalOpen]);
+
+    useEffect(() => {
+        if (!openPollModalToken || message.type !== "POLL") return;
+        setPollModalOpen(true);
+    }, [message.type, openPollModalToken]);
+
+    const closePollModal = useCallback(() => {
+        setPollModalOpen(false);
+        setPollDetailOpen(false);
+        setPollSettingsOpen(false);
+        setPollCloseConfirmOpen(false);
+        onPollModalClose?.();
+    }, [onPollModalClose]);
+
+    useEffect(() => {
+        if (!localPoll?.expiresAt || isPollExpired(localPoll)) return;
+        const delay = Math.max(
+            0,
+            new Date(localPoll.expiresAt).getTime() - Date.now() + 250,
+        );
+        const timer = window.setTimeout(
+            () => setPollClockTick((value) => value + 1),
+            delay,
+        );
+        return () => window.clearTimeout(timer);
+    }, [localPoll?.expiresAt]);
+
+    const updateMenuPosition = useCallback(() => {
+        const button = menuButtonRef.current;
+        if (!button) return;
+
+        const rect = button.getBoundingClientRect();
+        const estimatedMenuHeight = message.isRecalled
+            ? 56
+            : isOwn && canRecallOwnMessages
+              ? 360
+              : 320;
+        const shouldOpenBelow = rect.top < estimatedMenuHeight + 56;
+
+        setMenuPosition({
+            top: shouldOpenBelow ? rect.bottom + 6 : rect.top - 6,
+            placement: shouldOpenBelow ? "below" : "above",
+            ...(isOwn
+                ? { right: window.innerWidth - rect.right }
+                : { left: rect.left }),
+        });
+    }, [canRecallOwnMessages, isOwn, message.isRecalled]);
 
     useEffect(() => {
         if (!menuOpen) return;
+        updateMenuPosition();
+
         function handleOutside(e: MouseEvent) {
             if (
                 menuRef.current &&
@@ -602,14 +439,117 @@ export function MessageBubble({
                 setMenuOpen(false);
             }
         }
+        function handleWindowChange() {
+            updateMenuPosition();
+        }
+
+        document.addEventListener("mousedown", handleOutside);
+        window.addEventListener("resize", handleWindowChange);
+        window.addEventListener("scroll", handleWindowChange, true);
+        return () => {
+            document.removeEventListener("mousedown", handleOutside);
+            window.removeEventListener("resize", handleWindowChange);
+            window.removeEventListener("scroll", handleWindowChange, true);
+        };
+    }, [menuOpen, updateMenuPosition]);
+
+    // Close reaction picker when clicking outside
+    useEffect(() => {
+        if (!reactionOpen) return;
+        function handleOutside(e: MouseEvent) {
+            if (
+                reactionRef.current &&
+                !reactionRef.current.contains(e.target as Node)
+            ) {
+                setReactionOpen(false);
+            }
+        }
         document.addEventListener("mousedown", handleOutside);
         return () => document.removeEventListener("mousedown", handleOutside);
-    }, [menuOpen]);
+    }, [reactionOpen]);
+
+    const groupInviteUrl =
+        (message.type === "TEXT" || message.type === "LINK") && !message.isRecalled
+            ? extractGroupInviteUrl(message.content)
+            : null;
+    const groupInviteToken = groupInviteUrl
+        ? extractGroupInviteToken(groupInviteUrl)
+        : null;
 
     const handleCopy = useCallback(() => {
         if (message.content) navigator.clipboard.writeText(message.content);
         setMenuOpen(false);
     }, [message.content]);
+
+    const openInvitePreview = useCallback(async () => {
+        if (!groupInviteToken) return;
+
+        setInviteModalOpen(true);
+        setInviteLoading(true);
+        setInviteError("");
+        setInviteCancelling(false);
+        setInvitePreview(null);
+        setInviteUserStatus(null);
+
+        try {
+            const preview = await chatService.previewInvite(groupInviteToken);
+            if (preview.userStatus === "ACTIVE") {
+                navigate(`/messages/${preview.conversationId}`);
+                setInviteModalOpen(false);
+                return;
+            }
+
+            setInvitePreview(preview);
+            setInviteUserStatus(preview.userStatus);
+        } catch {
+            setInviteError(
+                "Link tham gia không hợp lệ hoặc đã bị vô hiệu hóa.",
+            );
+        } finally {
+            setInviteLoading(false);
+        }
+    }, [groupInviteToken, navigate]);
+
+    const handleJoinInvite = useCallback(async () => {
+        if (!groupInviteToken || inviteUserStatus !== "NOT_MEMBER") return;
+
+        try {
+            setInviteJoining(true);
+            const response = await chatService.joinByInvite(groupInviteToken);
+            const conversationId = resolveJoinedConversationId(response);
+            if (conversationId) {
+                setInviteModalOpen(false);
+                navigate(`/messages/${conversationId}`);
+                return;
+            }
+
+            setInviteUserStatus("PENDING");
+            toast.success("Đã gửi yêu cầu tham gia nhóm.");
+            setInviteModalOpen(false);
+        } catch (error) {
+            console.log(error);
+            const message = extractApiErrorMessage(error);
+            toast.error(message || "Bạn đã bị chặn khỏi nhóm.");
+        } finally {
+            setInviteJoining(false);
+        }
+    }, [groupInviteToken, inviteUserStatus, navigate]);
+
+    const handleCancelInviteRequest = useCallback(async () => {
+        if (!invitePreview || inviteUserStatus !== "PENDING") return;
+
+        try {
+            setInviteCancelling(true);
+            await chatService.cancelMyJoinRequest(invitePreview.conversationId);
+            setInviteUserStatus("NOT_MEMBER");
+            toast.success("Đã hủy yêu cầu tham gia nhóm.");
+        } catch (error) {
+            const message = extractApiErrorMessage(error);
+            toast.error(message || "Không thể hủy yêu cầu tham gia.");
+        } finally {
+            setInviteCancelling(false);
+        }
+    }, [invitePreview, inviteUserStatus]);
 
     const handleRecallClick = useCallback(() => {
         onRecall(message.id);
@@ -630,8 +570,13 @@ export function MessageBubble({
         setMenuOpen(false);
     }, [message, onReply]);
 
+    const handleForwardClick = useCallback(() => {
+        onForward?.(message);
+        setMenuOpen(false);
+    }, [message, onForward]);
+
     const handleDeleteForMeClick = useCallback(() => {
-        onDeleteForMe(message.id);
+        onDeleteForMe?.(message.id);
         setMenuOpen(false);
     }, [message.id, onDeleteForMe]);
 
@@ -664,6 +609,7 @@ export function MessageBubble({
     // Các tin này sẽ render ở giữa đoạn chat (không lệch trái/phải như bubble thường).
     const isPinSystemMessage =
         message.type === "SYSTEM_PIN" || message.type === "SYSTEM_UPIN";
+    const isGroupSystemMessage = isGroupSystemType(message.type);
 
     const messageDate = new Date(message.createdAt);
     const validMessageDate = Number.isFinite(messageDate.getTime());
@@ -673,7 +619,6 @@ export function MessageBubble({
               minute: "2-digit",
           })
         : "";
-
     // Tooltip giờ có ngữ cảnh: hôm nay → giờ, hôm qua → "Hôm qua HH:MM", cũ → "D Tháng M, YYYY HH:MM"
     const tooltipTimeStr = (() => {
         const date = new Date(message.createdAt);
@@ -698,22 +643,17 @@ export function MessageBubble({
     const messageAttachments = Array.isArray(message.attachments)
         ? message.attachments
         : [];
+    const normalizeMediaUrl = (url?: string) => buildS3Url(url) || url || "";
     const imageUrls =
         message.type === "IMAGE"
             ? messageAttachments
-                  .map((attachment) => attachment.url)
-                  .filter((url): url is string => Boolean(url))
-            : [];
-    const videoUrls =
-        message.type === "VIDEO"
-            ? messageAttachments
-                  .map((attachment) => attachment.url)
+                  .map((attachment) => normalizeMediaUrl(attachment.url))
                   .filter((url): url is string => Boolean(url))
             : [];
     const audioUrls =
         message.type === "AUDIO"
             ? messageAttachments
-                  .map((attachment) => attachment.url)
+                  .map((attachment) => normalizeMediaUrl(attachment.url))
                   .filter((url): url is string => Boolean(url))
             : [];
     const fileAttachment =
@@ -723,7 +663,7 @@ export function MessageBubble({
     const resolvedFileName =
         fileAttachment?.fileName ||
         getFileNameFromUrl(fileAttachment?.url, fileNameFromUrl);
-    const resolvedFileUrl = fileAttachment?.url || message.content;
+    const resolvedFileUrl = normalizeMediaUrl(fileAttachment?.url || message.content);
     const resolvedFileSize = formatBytes(fileAttachment?.fileSize);
     const resolvedFileMimeType = fileAttachment?.type;
     const resolvedFileCategory = resolveFileCategory(
@@ -775,6 +715,112 @@ export function MessageBubble({
         anchor.remove();
     }, [resolvedFileName, resolvedFileUrl]);
 
+    const handleTogglePollOption = useCallback(
+        async (optionId: string) => {
+            const poll = localPoll;
+            if (!poll || poll.closed || poll.recalled || isPollExpired(poll) || pollUpdating) return;
+
+            const selected = poll.currentUserOptionIds ?? [];
+            const nextSelected = poll.allowMultipleChoices
+                ? selected.includes(optionId)
+                    ? selected.filter((id) => id !== optionId)
+                    : [...selected, optionId]
+                : selected.includes(optionId)
+                  ? []
+                  : [optionId];
+
+            setPollUpdating(true);
+            try {
+                const updated =
+                    nextSelected.length === 0
+                        ? await chatService.removePollVote(poll.id)
+                        : await chatService.votePoll(poll.id, nextSelected);
+                pollSelectionByIdRef.current[poll.id] =
+                    updated.currentUserOptionIds ?? nextSelected;
+                setLocalPoll(updated);
+            } catch (error) {
+                toast.error("Không thể cập nhật bình chọn");
+            } finally {
+                setPollUpdating(false);
+            }
+        },
+        [localPoll, pollUpdating],
+    );
+
+    const togglePollDraftOption = useCallback(
+        (optionId: string) => {
+            const poll = localPoll;
+            if (!poll || poll.closed || poll.recalled || isPollExpired(poll) || pollUpdating) return;
+
+            setPollDraftOptionIds((current) => {
+                if (poll.allowMultipleChoices) {
+                    return current.includes(optionId)
+                        ? current.filter((id) => id !== optionId)
+                        : [...current, optionId];
+                }
+                return current.includes(optionId) ? [] : [optionId];
+            });
+        },
+        [localPoll, pollUpdating],
+    );
+
+    const submitPollDraft = useCallback(async () => {
+        const poll = localPoll;
+        if (!poll || poll.closed || poll.recalled || isPollExpired(poll) || pollUpdating) return;
+
+        setPollUpdating(true);
+        try {
+            const updated =
+                pollDraftOptionIds.length === 0
+                    ? await chatService.removePollVote(poll.id)
+                    : await chatService.votePoll(poll.id, pollDraftOptionIds);
+            pollSelectionByIdRef.current[poll.id] =
+                updated.currentUserOptionIds ?? pollDraftOptionIds;
+            setLocalPoll(updated);
+            setPollDraftOptionIds(updated.currentUserOptionIds ?? []);
+            closePollModal();
+        } catch {
+            toast.error("Khong the cap nhat binh chon");
+        } finally {
+            setPollUpdating(false);
+        }
+    }, [closePollModal, localPoll, pollDraftOptionIds, pollUpdating]);
+
+    const submitPollNewOption = useCallback(async () => {
+        const poll = localPoll;
+        const text = pollNewOptionText.trim();
+        if (!poll || !text || isPollExpired(poll) || pollUpdating) return;
+
+        setPollUpdating(true);
+        try {
+            const updated = await chatService.addPollOption(poll.id, text);
+            setLocalPoll(updated);
+            setPollNewOptionText("");
+            setPollAddingOption(false);
+        } catch {
+            toast.error("Khong the them lua chon");
+        } finally {
+            setPollUpdating(false);
+        }
+    }, [localPoll, pollNewOptionText, pollUpdating]);
+
+    const closePoll = useCallback(async () => {
+        const poll = localPoll;
+        if (!poll || poll.closed || poll.recalled || pollUpdating) return;
+
+        setPollUpdating(true);
+        try {
+            const updated = await chatService.closePoll(poll.id);
+            setLocalPoll(updated);
+            setPollCloseConfirmOpen(false);
+            setPollSettingsOpen(false);
+        } catch {
+            toast.error("Khong the khoa binh chon");
+        } finally {
+            setPollUpdating(false);
+        }
+    }, [localPoll, pollUpdating]);
+
     const handleFileCardKeyDown = useCallback(
         (event: React.KeyboardEvent<HTMLDivElement>) => {
             if (!resolvedFileUrl) return;
@@ -807,6 +853,104 @@ export function MessageBubble({
         if (!raw) return "1 tin nhắn";
         return `"${raw}"`;
     }, [message.replyInfo]);
+
+    const pollCreator = localPoll?.creatorId
+        ? membersById[localPoll.creatorId]
+        : undefined;
+    const pollCreatorName = pollCreator?.accountLocked
+        ? LOCKED_ACCOUNT_NAME
+        : pollCreator?.nickname ||
+          pollCreator?.username ||
+          (localPoll?.creatorId === currentUserId ? "Ban" : senderName);
+    const pollUniqueVoterIds = useMemo(() => {
+        const ids = new Set<number>();
+        for (const option of localPoll?.options ?? []) {
+            for (const voterId of option.voterIds ?? []) {
+                ids.add(Number(voterId));
+            }
+        }
+        return Array.from(ids);
+    }, [localPoll?.options]);
+    const pollTotalVotes = localPoll?.totalVoteCount ?? 0;
+    const pollUniqueVoterCount =
+        localPoll?.totalVoterCount ??
+        (pollUniqueVoterIds.length || pollTotalVotes);
+    const pollSummaryText =
+        pollUniqueVoterCount > 0
+            ? `${pollUniqueVoterCount} nguoi da binh chon`
+            : "Chua co ai binh chon";
+    const pollExpired = isPollExpired(localPoll);
+    const pollEnded = Boolean(
+        localPoll && (localPoll.closed || localPoll.recalled || pollExpired),
+    );
+    const pollHasEndTime = Boolean(localPoll?.expiresAt || pollEnded);
+    const pollEndTime = localPoll?.expiresAt || (pollEnded ? localPoll?.updatedAt : null);
+    const pollClosedTimeLabel = formatPollEndLabel(pollEndTime, pollEnded);
+    const pollCreatedDayLabel = formatContextDay(localPoll?.createdAt || message.createdAt);
+    const currentUserRole = membersById[currentUserId]?.role;
+    const canClosePoll =
+        Boolean(localPoll?.creatorId) &&
+        (Number(localPoll?.creatorId) === Number(currentUserId) ||
+            currentUserRole === "OWNER" ||
+            currentUserRole === "DEPUTY");
+
+    const getPollMember = useCallback(
+        (userIdToFind: number) => membersById[userIdToFind],
+        [membersById],
+    );
+
+    const getPollMemberName = useCallback(
+        (userIdToFind: number) => {
+            const member = getPollMember(userIdToFind);
+            if (Number(userIdToFind) === Number(currentUserId)) return "Ban";
+            if (member?.accountLocked) return LOCKED_ACCOUNT_NAME;
+            return (
+                member?.nickname ||
+                member?.username ||
+                `Nguoi dung ${userIdToFind}`
+            );
+        },
+        [currentUserId, getPollMember],
+    );
+
+    const getPollMemberAvatar = useCallback(
+        (userIdToFind: number) => {
+            const member = getPollMember(userIdToFind);
+            if (member?.accountLocked) return LOCKED_ACCOUNT_AVATAR_URL;
+            return member?.avatar || defaultAvatarSmallUrl;
+        },
+        [defaultAvatarSmallUrl, getPollMember],
+    );
+
+    const renderPollAvatarStack = useCallback(
+        (voterIds: number[] = []) => {
+            const uniqueIds = Array.from(new Set(voterIds.map(Number)));
+            const visibleIds = uniqueIds.slice(0, 3);
+            const hiddenCount = Math.max(
+                0,
+                uniqueIds.length - visibleIds.length,
+            );
+
+            return (
+                <span className="flex items-center justify-end -space-x-2">
+                    {visibleIds.map((voterId) => (
+                        <img
+                            key={voterId}
+                            src={getPollMemberAvatar(voterId)}
+                            alt={getPollMemberName(voterId)}
+                            className="h-7 w-7 rounded-full border-2 border-white object-cover dark:border-[#111111]"
+                        />
+                    ))}
+                    {hiddenCount > 0 && (
+                        <span className="flex h-7 min-w-7 items-center justify-center rounded-full border-2 border-white bg-gray-200 px-1 text-[10px] font-bold text-gray-700 dark:border-[#111111] dark:bg-gray-700 dark:text-gray-100">
+                            +{hiddenCount}
+                        </span>
+                    )}
+                </span>
+            );
+        },
+        [getPollMemberAvatar, getPollMemberName],
+    );
 
     const callMeta = useMemo(() => {
         if (message.type !== "CALL") return null;
@@ -880,13 +1024,13 @@ export function MessageBubble({
           ? "text-blue-100"
           : "text-gray-500 dark:text-gray-400";
 
-    // Metadata cho tin nhắn bên người gửi:
-    // - Bubble luôn hiển thị phía trên
-    // - Dòng avatar + tên + thời gian nằm dưới bubble để dễ đọc hơn
-    const showIncomingMetaRow = !isOwn && !message.isRecalled && isLastInGroup;
-    const incomingMetaSpacingClass = isFirstInGroup ? "mt-1.5" : "mt-1";
-    const incomingNameWeightClass =
-        conversationType === "GROUP" ? "font-semibold" : "font-medium";
+    // Incoming avatar kiểu Messenger/Zalo:
+    // - Chỉ tin nhắn cuối nhóm mới hiện avatar
+    // - Các tin nhắn incoming khác giữ slot rỗng để bubble thẳng hàng
+    const showIncomingAvatarSlot = !isOwn;
+    const showIncomingAvatar = showIncomingAvatarSlot && isLastInGroup;
+    const showIncomingGroupSenderName =
+        conversationType === "GROUP" && !isOwn && isFirstInGroup;
 
     const normalizedReplyContent = (replyPreview?.content ?? "").trim();
     const isReplyPreviewRecalled =
@@ -1034,153 +1178,640 @@ export function MessageBubble({
         );
     }
 
+    if (isGroupSystemMessage) {
+        const pollSystem = isPollSystemType(message.type);
+        const content = pollSystem
+            ? ""
+            : buildSystemGroupMessage({
+                  type: message.type as
+                      | "SYSTEM_CREATE_GROUP"
+                      | "SYSTEM_ADD_MEMBER"
+                      | "SYSTEM_UPDATE_ROLE"
+                      | "SYSTEM_KICK_MEMBER"
+                      | "SYSTEM_BLOCK_MEMBER"
+                      | "SYSTEM_MEMBER_BLOCKED_FROM_JOIN"
+                      | "SYSTEM_LEAVE_GROUP"
+                      | "SYSTEM_DISBAND_GROUP"
+                      | "SYSTEM_UPDATE_SETTING"
+                      | "SYSTEM_REQUIRE_APPROVAL"
+                      | "SYSTEM_JOIN_VIA_LINK"
+                      | "SYSTEM_GROUP_INVITE_LINK_SENT",
+                  content: message.content,
+                  isOwn,
+                  senderName,
+                  senderId: message.senderId,
+                  currentUserId,
+                  membersById,
+              });
+        const currentMemberRole = membersById[currentUserId]?.role;
+        const canOpenRequireApprovalDetails =
+            message.type === "SYSTEM_REQUIRE_APPROVAL" &&
+            (currentMemberRole === "OWNER" || currentMemberRole === "DEPUTY") &&
+            Boolean(onOpenRequireApprovalDetails);
+        const pollMessageId = message.replyInfo?.messageId;
+        const pollActorLabel =
+            pollSystem && isAnonymousPollActorMessage(message.type) && Number(message.senderId) <= 0
+                ? "Mot thanh vien"
+                : isOwn
+                  ? "Ban"
+                  : senderName;
+
+        return (
+            <div className="w-full flex justify-center">
+                <div className="inline-flex max-w-full items-center gap-1.5 rounded-full bg-gray-100 dark:bg-gray-800 px-3 py-1.5 text-xs text-gray-700 dark:text-gray-200">
+                    {pollSystem ? (
+                        <ListChecks size={13} className="shrink-0 text-emerald-500" />
+                    ) : (
+                        <Users size={12} className="shrink-0" />
+                    )}
+                    <span className="truncate">
+                        {pollSystem ? buildPollSystemText(message.type, message.content, pollActorLabel) : content}
+                    </span>
+                    {canOpenRequireApprovalDetails && (
+                        <button
+                            type="button"
+                            onClick={onOpenRequireApprovalDetails}
+                            className="shrink-0 font-semibold text-blue-600 hover:underline dark:text-blue-400"
+                        >
+                            Chi tiết
+                        </button>
+                    )}
+                    {pollSystem && pollMessageId && (
+                        <button
+                            type="button"
+                            onClick={() => onOpenPollMessage?.(pollMessageId)}
+                            className="shrink-0 font-semibold text-blue-600 hover:underline dark:text-blue-400"
+                        >
+                            Xem
+                        </button>
+                    )}
+                </div>
+            </div>
+        );
+    }
+
+    if (message.type === "POLL" && localPoll) {
+        const selectedOptionIds = localPoll.currentUserOptionIds ?? [];
+
+        return (
+            <div className="w-full flex justify-center">
+                <button
+                    type="button"
+                    onClick={() => setPollModalOpen(true)}
+                    className="w-full max-w-sm rounded-xl border border-gray-200 bg-white px-4 py-4 text-left text-gray-900 shadow-md shadow-slate-200/70 transition hover:border-blue-200 hover:shadow-lg dark:border-[#303030] dark:bg-[#111111] dark:text-gray-100 dark:shadow-black/30"
+                >
+                    <h3 className="text-lg font-bold leading-tight">
+                        {localPoll.title || message.content}
+                    </h3>
+                    {pollEnded ? (
+                        <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">
+                            {pollClosedTimeLabel || "Da ket thuc"}
+                        </p>
+                    ) : (
+                        <div className="mt-3 flex items-center gap-1 text-sm font-medium text-blue-500">
+                            <span>{pollSummaryText}</span>
+                            <span className="flex items-center">
+                                <Play
+                                    size={9}
+                                    fill="currentColor"
+                                    stroke="none"
+                                />
+                            </span>
+                        </div>
+                    )}
+                    {!pollEnded && pollHasEndTime && (
+                        <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">
+                            {pollClosedTimeLabel}
+                        </p>
+                    )}
+                    <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">
+                        {localPoll.allowMultipleChoices
+                            ? "Chon nhieu phuong an"
+                            : "Chon mot phuong an"}
+                    </p>
+                    <div className="mt-4 space-y-2">
+                        {localPoll.options.slice(0, 3).map((option) => {
+                            const selected =
+                                selectedOptionIds.includes(option.id) ||
+                                option.selectedByCurrentUser;
+                            const voterIds = option.voterIds ?? [];
+                            return (
+                                <div
+                                    key={option.id}
+                                    className={`flex min-h-10 items-center justify-between rounded-md px-3 text-base ${
+                                        selected
+                                            ? "bg-blue-200/80 dark:bg-blue-500/25"
+                                            : "bg-gray-100 dark:bg-gray-800"
+                                    }`}
+                                >
+                                    <span className="truncate">
+                                        {option.text}
+                                    </span>
+                                    {renderPollAvatarStack(voterIds)}
+                                </div>
+                            );
+                        })}
+                    </div>
+                    {localPoll.options.length > 3 && (
+                        <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">
+                            * Con {localPoll.options.length - 3} lua chon khac
+                        </p>
+                    )}
+                    <div
+                        className={`mt-3 flex h-9 items-center justify-center rounded-md border text-sm font-bold 
+                            
+                            border-blue-600 text-blue-600 dark:border-blue-400 dark:text-blue-400 hover:bg-blue-50
+                               
+                        }`}
+                    >
+                        {pollEnded
+                            ? "Xem bình chọn"
+                            : selectedOptionIds.length > 0
+                              ? "Đổi bình chọn"
+                              : "Bình chọn"}
+                    </div>
+                </button>
+
+                {pollModalOpen && (
+                    <div className="fixed inset-0 z-[140] flex items-center justify-center bg-black/55 px-4 py-6">
+                        <div className="relative flex max-h-[90vh] w-full max-w-md flex-col overflow-hidden rounded-md bg-white shadow-2xl dark:bg-[#111111]">
+                            <div className="flex items-center justify-between border-b border-gray-200 px-4 py-3 dark:border-[#303030]">
+                                <h2 className="text-base font-semibold text-gray-900 dark:text-white">
+                                    Binh chon
+                                </h2>
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        closePollModal();
+                                    }}
+                                    className="inline-flex h-8 w-8 items-center justify-center rounded-full text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800"
+                                >
+                                    <X size={20} />
+                                </button>
+                            </div>
+
+                            {pollDetailOpen ? (
+                                <>
+                                    <div className="flex items-center gap-2 border-b border-gray-200 px-4 py-3 dark:border-[#303030]">
+                                        <button
+                                            type="button"
+                                            onClick={() =>
+                                                setPollDetailOpen(false)
+                                            }
+                                            className="inline-flex h-8 w-8 items-center justify-center rounded-full text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800"
+                                        >
+                                            <ChevronLeft size={20} />
+                                        </button>
+                                        <h3 className="flex-1 text-base font-semibold text-gray-900 dark:text-white">
+                                            Chi tiet binh chon
+                                        </h3>
+                                    </div>
+                                    <div className="flex-1 overflow-y-auto px-5 py-4">
+                                        {localPoll.options.map((option) => {
+                                            const voters = (
+                                                option.voterIds ?? []
+                                            ).map(Number);
+                                            if (voters.length === 0)
+                                                return null;
+                                            return (
+                                                <div
+                                                    key={option.id}
+                                                    className="mb-6"
+                                                >
+                                                    <p className="mb-3 text-sm font-bold text-gray-900 dark:text-white">
+                                                        {option.text} (
+                                                        {voters.length})
+                                                    </p>
+                                                    <div className="space-y-3">
+                                                        {voters.map(
+                                                            (voterId) => (
+                                                                <div
+                                                                    key={`${option.id}-${voterId}`}
+                                                                    className="flex items-center gap-3"
+                                                                >
+                                                                    <img
+                                                                        src={getPollMemberAvatar(
+                                                                            voterId,
+                                                                        )}
+                                                                        alt={getPollMemberName(
+                                                                            voterId,
+                                                                        )}
+                                                                        className="h-10 w-10 rounded-full object-cover"
+                                                                    />
+                                                                    <span className="text-sm font-medium text-gray-800 dark:text-gray-100">
+                                                                        {getPollMemberName(
+                                                                            voterId,
+                                                                        )}
+                                                                    </span>
+                                                                </div>
+                                                            ),
+                                                        )}
+                                                    </div>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                </>
+                            ) : (
+                                <>
+                                    <div className="flex-1 overflow-y-auto px-4 py-5">
+                                        <h3 className="text-lg font-bold text-gray-900 dark:text-white">
+                                            {localPoll.title || message.content}
+                                        </h3>
+                                        <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
+                                            Tao boi {pollCreatorName}
+                                            {pollCreatedDayLabel ? ` · ${pollCreatedDayLabel}` : ""}
+                                        </p>
+                                        <p className="mt-5 flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300">
+                                            {pollHasEndTime && (
+                                                <>
+                                                    <Clock size={16} />
+                                                    {pollClosedTimeLabel}
+                                                </>
+                                            )}
+                                        </p>
+                                        <p className="mt-3 flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300">
+                                            <ListChecks size={16} />
+                                            {localPoll.allowMultipleChoices
+                                                ? "Chon nhieu phuong an"
+                                                : "Chon mot phuong an"}
+                                        </p>
+                                        {localPoll.anonymous && (
+                                            <p className="mt-3 flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300">
+                                                <EyeOff size={16} />
+                                                An nguoi binh chon
+                                            </p>
+                                        )}
+                                        <div className="my-4 h-px bg-gray-200 dark:bg-[#303030]" />
+                                        {localPoll.anonymous ? (
+                                            <p className="mb-4 text-sm font-medium text-blue-600 dark:text-blue-400">
+                                                {pollUniqueVoterCount} nguoi
+                                                binh chon, {pollTotalVotes} luot
+                                                binh chon
+                                            </p>
+                                        ) : (
+                                            <button
+                                                type="button"
+                                                onClick={() =>
+                                                    setPollDetailOpen(true)
+                                                }
+                                                className="mb-4 flex items-center gap-2 text-sm font-medium text-blue-600 hover:underline dark:text-blue-400"
+                                            >
+                                                <span>
+                                                    {pollUniqueVoterCount} nguoi
+                                                    binh chon, {pollTotalVotes}{" "}
+                                                    luot binh chon
+                                                </span>
+                                                <span>›</span>
+                                            </button>
+                                        )}
+
+                                        <div className="space-y-2">
+                                            {localPoll.options.map((option) => {
+                                                const selected =
+                                                    pollDraftOptionIds.includes(
+                                                        option.id,
+                                                    );
+                                                const voters = (
+                                                    option.voterIds ?? []
+                                                ).map(Number);
+                                                return (
+                                                    <button
+                                                        key={option.id}
+                                                        type="button"
+                                                        onClick={() =>
+                                                            togglePollDraftOption(
+                                                                option.id,
+                                                            )
+                                                        }
+                                                        disabled={
+                                                            pollUpdating ||
+                                                            pollEnded
+                                                        }
+                                                        className="flex w-full items-center gap-3 disabled:cursor-not-allowed disabled:opacity-70"
+                                                    >
+                                                        <span
+                                                            className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full border ${
+                                                                selected
+                                                                    ? "border-blue-600 bg-blue-600 text-white"
+                                                                    : "border-gray-300 bg-white dark:border-gray-600 dark:bg-[#111111]"
+                                                            }`}
+                                                        >
+                                                            {selected && (
+                                                                <CheckCircle2
+                                                                    size={14}
+                                                                />
+                                                            )}
+                                                        </span>
+                                                        <span
+                                                            className={`flex h-10 min-w-0 flex-1 items-center justify-between rounded px-3 text-left ${
+                                                                selected
+                                                                    ? "bg-blue-200/80 dark:bg-blue-500/25"
+                                                                    : "bg-gray-100 dark:bg-gray-800"
+                                                            }`}
+                                                        >
+                                                            <span className="truncate text-sm">
+                                                                {option.text}
+                                                            </span>
+                                                            {renderPollAvatarStack(
+                                                                voters,
+                                                            )}
+                                                        </span>
+                                                        <span className="w-5 text-right text-sm text-gray-700 dark:text-gray-200">
+                                                            {option.voteCount}
+                                                        </span>
+                                                    </button>
+                                                );
+                                            })}
+                                        </div>
+
+                                        {pollEnded ? (
+                                            <p className="mt-4 flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400">
+                                                <Lock size={15} />
+                                                Binh chon da dong
+                                            </p>
+                                        ) : localPoll.allowAddOption ? (
+                                            pollAddingOption ? (
+                                                <div className="mt-4 flex items-center gap-2">
+                                                    <input
+                                                        value={
+                                                            pollNewOptionText
+                                                        }
+                                                        onChange={(event) =>
+                                                            setPollNewOptionText(
+                                                                event.target
+                                                                    .value,
+                                                            )
+                                                        }
+                                                        autoFocus
+                                                        placeholder="Them lua chon"
+                                                        className="h-9 min-w-0 flex-1 rounded border border-gray-300 bg-white px-3 text-sm outline-none focus:border-blue-500 dark:border-[#303030] dark:bg-black dark:text-white"
+                                                    />
+                                                    <button
+                                                        type="button"
+                                                        onClick={() =>
+                                                            void submitPollNewOption()
+                                                        }
+                                                        disabled={
+                                                            !pollNewOptionText.trim() ||
+                                                            pollUpdating ||
+                                                            pollEnded
+                                                        }
+                                                        className="inline-flex h-9 items-center gap-1 rounded px-2 text-sm font-semibold text-blue-600 disabled:opacity-50"
+                                                    >
+                                                        <Plus size={16} />
+                                                        Them
+                                                    </button>
+                                                </div>
+                                            ) : (
+                                                <button
+                                                    type="button"
+                                                    onClick={() =>
+                                                        setPollAddingOption(
+                                                            true,
+                                                        )
+                                                    }
+                                                    className="mt-3 inline-flex items-center gap-1 text-sm font-semibold text-blue-600 hover:text-blue-700 dark:text-blue-400"
+                                                >
+                                                    <Plus size={18} />
+                                                    Them lua chon
+                                                </button>
+                                            )
+                                        ) : null}
+                                    </div>
+                                </>
+                            )}
+
+                            <div className="relative flex items-center justify-between gap-3 border-t border-gray-200 px-4 py-3 dark:border-[#303030]">
+                                <div className="relative">
+                                    <button
+                                        type="button"
+                                        onClick={() =>
+                                            setPollSettingsOpen((open) => !open)
+                                        }
+                                        className="inline-flex h-10 w-10 items-center justify-center rounded-full text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+                                    >
+                                        <Settings size={22} />
+                                    </button>
+                                    {pollSettingsOpen && (
+                                        <div className="absolute bottom-full left-0 mb-2 w-48 overflow-hidden rounded-md border border-gray-200 bg-white py-1 shadow-xl dark:border-[#303030] dark:bg-[#111111]">
+                                            <button
+                                                type="button"
+                                                onClick={() => {
+                                                    setPollSettingsOpen(false);
+                                                    if (isPinned) {
+                                                        onUnpin(message.id);
+                                                    } else {
+                                                        onPin(message.id);
+                                                    }
+                                                }}
+                                                className="block w-full px-4 py-2.5 text-left text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-100 dark:hover:bg-gray-800"
+                                            >
+                                                {isPinned ? "Bo ghim" : "Ghim len dau tro chuyen"}
+                                            </button>
+                                            {canClosePoll && (
+                                                <button
+                                                    type="button"
+                                                    disabled={
+                                                        pollEnded
+                                                    }
+                                                    onClick={() => {
+                                                        setPollSettingsOpen(
+                                                            false,
+                                                        );
+                                                        setPollCloseConfirmOpen(
+                                                            true,
+                                                        );
+                                                    }}
+                                                    className="block w-full px-4 py-2.5 text-left text-sm text-gray-700 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-gray-100 dark:hover:bg-gray-800"
+                                                >
+                                                    Khoa binh chon
+                                                </button>
+                                            )}
+                                        </div>
+                                    )}
+                                </div>
+                                <div className="flex items-center justify-end gap-3">
+                                    <button
+                                        type="button"
+                                    onClick={() => {
+                                            closePollModal();
+                                        }}
+                                        className="h-10 rounded-md bg-gray-200 px-5 text-sm font-semibold text-gray-800 hover:bg-gray-300 dark:bg-[#262626] dark:text-gray-100 dark:hover:bg-[#333333]"
+                                    >
+                                        Huy
+                                    </button>
+                                    {pollEnded ? null : (
+                                        <button
+                                            type="button"
+                                            onClick={() =>
+                                                void submitPollDraft()
+                                            }
+                                            disabled={
+                                                pollDetailOpen || pollUpdating
+                                            }
+                                            className="h-10 rounded-md bg-blue-500 px-5 text-sm font-semibold text-white hover:bg-blue-600 disabled:cursor-not-allowed disabled:bg-blue-300"
+                                        >
+                                            {pollUpdating
+                                                ? "Dang luu..."
+                                                : "Xac nhan"}
+                                        </button>
+                                    )}
+                                </div>
+                            </div>
+                            {pollCloseConfirmOpen && (
+                                <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/45 px-6">
+                                    <div className="w-full max-w-sm overflow-hidden rounded-md bg-white shadow-2xl dark:bg-[#111111]">
+                                        <div className="flex items-center justify-between border-b border-gray-200 px-4 py-3 dark:border-[#303030]">
+                                            <h3 className="text-base font-semibold text-gray-900 dark:text-white">
+                                                Khoa binh chon?
+                                            </h3>
+                                            <button
+                                                type="button"
+                                                onClick={() =>
+                                                    setPollCloseConfirmOpen(
+                                                        false,
+                                                    )
+                                                }
+                                                className="inline-flex h-8 w-8 items-center justify-center rounded-full text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800"
+                                            >
+                                                <X size={20} />
+                                            </button>
+                                        </div>
+                                        <div className="px-4 py-5">
+                                            <p className="text-sm leading-6 text-gray-700 dark:text-gray-200">
+                                                Sau khi khoa, ban va cac thanh
+                                                vien khac se khong the tiep tuc
+                                                tham gia binh chon
+                                            </p>
+                                        </div>
+                                        <div className="flex justify-end gap-3 px-4 pb-4">
+                                            <button
+                                                type="button"
+                                                onClick={() =>
+                                                    setPollCloseConfirmOpen(
+                                                        false,
+                                                    )
+                                                }
+                                                className="h-10 rounded-md bg-gray-200 px-5 text-sm font-semibold text-gray-800 hover:bg-gray-300 dark:bg-[#262626] dark:text-gray-100 dark:hover:bg-[#333333]"
+                                            >
+                                                Khong
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => void closePoll()}
+                                                disabled={pollUpdating}
+                                                className="h-10 rounded-md bg-red-600 px-5 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-60"
+                                            >
+                                                Khoa binh chon
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                )}
+            </div>
+        );
+    }
+
     return (
         <div
             className={`flex items-end gap-1 overflow-visible ${isOwn ? "justify-end" : "justify-start"} group`}
         >
-            {/* Nút "..." — hiện khi hover, căn giữa theo bubble */}
+            {showIncomingAvatarSlot && (
+                <div className="h-7 w-7 shrink-0 self-end mb-0.5">
+                    {showIncomingAvatar && (
+                        <img
+                            src={senderAvatar || defaultAvatarSmallUrl}
+                            alt={senderName}
+                            className="h-7 w-7 rounded-full object-cover ring-1 ring-gray-200/80 dark:ring-gray-700/80"
+                        />
+                    )}
+                </div>
+            )}
+
+            {/* Emoji reaction bar + "..." — hiện khi hover */}
             <div
-                ref={menuRef}
-                className={`relative z-60 opacity-0 group-hover:opacity-100 transition-opacity self-center ${isOwn ? "order-first" : "order-last"}`}
+                className={`relative z-[100] flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity self-center ${
+                    isOwn ? "order-first flex-row-reverse" : "order-last"
+                }`}
             >
-                <button
-                    onClick={() => setMenuOpen((v) => !v)}
-                    className="p-1 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-500 dark:text-gray-400 mb-4"
-                    title="Tùy chọn"
-                >
-                    <MoreVertical size={16} />
-                </button>
-
-                {menuOpen && (
-                    <div
-                        className={`absolute bottom-full mb-1 ${isOwn ? "right-0" : "left-0"} bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 rounded-lg shadow-xl py-1.5 z-70 w-56`}
+                {/* Reaction emoji pill */}
+                <div ref={reactionRef} className="relative">
+                    <button
+                        type="button"
+                        onClick={() => setReactionOpen((v) => !v)}
+                        className="p-1 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-400 dark:text-gray-500 mb-4"
+                        title="Thả cảm xúc"
                     >
-                        {message.isRecalled ? (
-                            <button
-                                onClick={handleDeleteForMeClick}
-                                className={menuItemBase}
-                            >
-                                <Trash2
-                                    size={16}
-                                    className="text-red-500 shrink-0"
-                                />
-                                <span className="text-red-500">
-                                    Xóa chỉ ở phía tôi
-                                </span>
-                            </button>
-                        ) : (
-                            <>
-                                <button
-                                    onClick={handleCopy}
-                                    className={menuItemBase}
-                                >
-                                    <Copy
-                                        size={16}
-                                        className="text-gray-500 dark:text-gray-400 shrink-0"
-                                    />
-                                    <span className="text-gray-800 dark:text-gray-100">
-                                        Copy tin nhắn
-                                    </span>
-                                </button>
-                                <button
-                                    onClick={handlePinClick}
-                                    className={menuItemBase}
-                                >
-                                    <Pin
-                                        size={16}
-                                        className="text-gray-500 dark:text-gray-400 shrink-0"
-                                    />
-                                    <span className="text-gray-800 dark:text-gray-100">
-                                        {isPinned ? "Bỏ ghim" : "Ghim tin nhắn"}
-                                    </span>
-                                </button>
-                                <button
-                                    onClick={handleReplyClick}
-                                    className={menuItemBase}
-                                >
-                                    <Reply
-                                        size={16}
-                                        className="text-gray-500 dark:text-gray-400 shrink-0"
-                                    />
-                                    <span className="text-gray-800 dark:text-gray-100">
-                                        Trả lời
-                                    </span>
-                                </button>
-                                <button
-                                    onClick={() => setMenuOpen(false)}
-                                    className={menuItemBase}
-                                >
-                                    <Star
-                                        size={16}
-                                        className="text-gray-500 dark:text-gray-400 shrink-0"
-                                    />
-                                    <span className="text-gray-800 dark:text-gray-100">
-                                        Đánh dấu tin nhắn
-                                    </span>
-                                </button>
-                                <button
-                                    onClick={() => setMenuOpen(false)}
-                                    className={menuItemBase}
-                                >
-                                    <ListChecks
-                                        size={16}
-                                        className="text-gray-500 dark:text-gray-400 shrink-0"
-                                    />
-                                    <span className="text-gray-800 dark:text-gray-100">
-                                        Chọn nhiều tin nhắn
-                                    </span>
-                                </button>
-                                <button
-                                    onClick={() => setMenuOpen(false)}
-                                    className={menuItemBase}
-                                >
-                                    <Info
-                                        size={16}
-                                        className="text-gray-500 dark:text-gray-400 shrink-0"
-                                    />
-                                    <span className="text-gray-800 dark:text-gray-100">
-                                        Xem chi tiết
-                                    </span>
-                                </button>
-                                <button
-                                    onClick={() => setMenuOpen(false)}
-                                    className={`${menuItemBase} justify-between`}
-                                >
-                                    <span className="flex items-center gap-3">
-                                        <ChevronRight
-                                            size={16}
-                                            className="text-gray-500 dark:text-gray-400 shrink-0"
-                                        />
-                                        <span className="text-gray-800 dark:text-gray-100">
-                                            Tuỳ chọn khác
-                                        </span>
-                                    </span>
-                                    <ChevronRight
-                                        size={14}
-                                        className="text-gray-400"
-                                    />
-                                </button>
-
-                                {/* Separator + Danger zone */}
-                                <div className="my-1.5 border-t border-gray-100 dark:border-gray-700" />
-
-                                {/* Thu hồi - chỉ hiện cho tin nhắn của mình */}
-                                {isOwn && (
+                        <svg
+                            width="16"
+                            height="16"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                        >
+                            <circle cx="12" cy="12" r="10" />
+                            <path d="M8 14s1.5 2 4 2 4-2 4-2" />
+                            <line x1="9" y1="9" x2="9.01" y2="9" />
+                            <line x1="15" y1="9" x2="15.01" y2="9" />
+                        </svg>
+                    </button>
+                    {reactionOpen && (
+                        <div
+                            className={`absolute bottom-full mb-1 flex items-center gap-0.5 px-2 py-1.5 rounded-full bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 shadow-xl z-[9999] ${
+                                isOwn ? "right-0" : "left-0"
+                            }`}
+                        >
+                            {["👍", "❤️", "😂", "😅", "😭", "😡"].map(
+                                (emoji) => (
                                     <button
-                                        onClick={handleRecallClick}
-                                        className={menuItemBase}
+                                        key={emoji}
+                                        type="button"
+                                        onClick={() => {
+                                            setReactionOpen(false);
+                                            onReaction?.(message.id, emoji);
+                                        }}
+                                        className="text-xl leading-none p-0.5 rounded-full hover:scale-125 hover:bg-gray-100 dark:hover:bg-gray-700 transition-transform duration-150"
+                                        title={emoji}
                                     >
-                                        <Undo2
-                                            size={16}
-                                            className="text-red-500 shrink-0"
-                                        />
-                                        <span className="text-red-500">
-                                            Thu hồi
-                                        </span>
+                                        {emoji}
                                     </button>
-                                )}
+                                ),
+                            )}
+                        </div>
+                    )}
+                </div>
 
-                                {/* Xóa ở phía tôi - hiện cho TẤT CẢ tin nhắn */}
+                {/* "..." menu button */}
+                <div ref={menuRef} className="relative">
+                    <button
+                        ref={menuButtonRef}
+                        onClick={() => {
+                            updateMenuPosition();
+                            setMenuOpen((v) => !v);
+                        }}
+                        className="p-1 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-500 dark:text-gray-400 mb-4"
+                        title="Tùy chọn"
+                    >
+                        <MoreVertical size={16} />
+                    </button>
+
+                    {menuOpen && (
+                        <div
+                            style={{
+                                top: menuPosition?.top,
+                                left: menuPosition?.left,
+                                right: menuPosition?.right,
+                            }}
+                            className={`fixed ${menuPosition?.placement === "above" ? "-translate-y-full" : ""} max-h-[min(22rem,calc(100vh-4rem))] overflow-y-auto bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 rounded-lg shadow-xl py-1.5 z-[9999] w-56`}
+                        >
+                            {message.isRecalled ? (
                                 <button
                                     onClick={handleDeleteForMeClick}
                                     className={menuItemBase}
@@ -1193,16 +1824,120 @@ export function MessageBubble({
                                         Xóa chỉ ở phía tôi
                                     </span>
                                 </button>
-                            </>
-                        )}
-                    </div>
-                )}
+                            ) : (
+                                <>
+                                    <button
+                                        onClick={handleCopy}
+                                        className={menuItemBase}
+                                    >
+                                        <Copy
+                                            size={16}
+                                            className="text-gray-500 dark:text-gray-400 shrink-0"
+                                        />
+                                        <span className="text-gray-800 dark:text-gray-100">
+                                            Copy tin nhắn
+                                        </span>
+                                    </button>
+                                    <button
+                                        onClick={handlePinClick}
+                                        className={menuItemBase}
+                                    >
+                                        <Pin
+                                            size={16}
+                                            className="text-gray-500 dark:text-gray-400 shrink-0"
+                                        />
+                                        <span className="text-gray-800 dark:text-gray-100">
+                                            {isPinned
+                                                ? "Bỏ ghim"
+                                                : "Ghim tin nhắn"}
+                                        </span>
+                                    </button>
+                                    <button
+                                        onClick={handleReplyClick}
+                                        className={menuItemBase}
+                                    >
+                                        <CornerUpLeft
+                                            size={16}
+                                            className="text-gray-500 dark:text-gray-400 shrink-0"
+                                        />
+                                        <span className="text-gray-800 dark:text-gray-100">
+                                            Trả lời
+                                        </span>
+                                    </button>
+                                    <button
+                                        onClick={handleForwardClick}
+                                        className={menuItemBase}
+                                    >
+                                        <CornerUpRight
+                                            size={16}
+                                            className="text-gray-500 dark:text-gray-400 shrink-0"
+                                        />
+                                        <span className="text-gray-800 dark:text-gray-100">
+                                            Chuyển Tiếp
+                                        </span>
+                                    </button>
+                                    <button
+                                        onClick={() => setMenuOpen(false)}
+                                        className={menuItemBase}
+                                    >
+                                        <ListChecks
+                                            size={16}
+                                            className="text-gray-500 dark:text-gray-400 shrink-0"
+                                        />
+                                        <span className="text-gray-800 dark:text-gray-100">
+                                            Chọn nhiều tin nhắn
+                                        </span>
+                                    </button>
+
+                                    {/* Separator + Danger zone */}
+                                    <div className="my-1.5 border-t border-gray-100 dark:border-gray-700" />
+
+                                    {/* Thu hồi - chỉ hiện cho tin nhắn của mình */}
+                                    {isOwn && canRecallOwnMessages && (
+                                        <button
+                                            onClick={handleRecallClick}
+                                            className={menuItemBase}
+                                        >
+                                            <Undo2
+                                                size={16}
+                                                className="text-red-500 shrink-0"
+                                            />
+                                            <span className="text-red-500">
+                                                Thu hồi
+                                            </span>
+                                        </button>
+                                    )}
+
+                                    {/* Xóa ở phía tôi - hiện cho TẤT CẢ tin nhắn */}
+                                    <button
+                                        onClick={handleDeleteForMeClick}
+                                        className={menuItemBase}
+                                    >
+                                        <Trash2
+                                            size={16}
+                                            className="text-red-500 shrink-0"
+                                        />
+                                        <span className="text-red-500">
+                                            Xóa chỉ ở phía tôi
+                                        </span>
+                                    </button>
+                                </>
+                            )}
+                        </div>
+                    )}
+                </div>
             </div>
 
             {/* Cột: bubble + metadata dưới (với tin người gửi) */}
             <div
-                className={`relative flex flex-col max-w-[70%] overflow-visible ${isOwn ? "items-end" : "items-start"}`}
+                className={`relative flex flex-col max-w-[78%] sm:max-w-[72%] lg:max-w-[68%] overflow-visible ${isOwn ? "items-end" : "items-start"}`}
             >
+                {showIncomingGroupSenderName && (
+                    <p className="mb-1 px-1 text-[11px] font-medium text-gray-400 dark:text-gray-500">
+                        {senderName}
+                    </p>
+                )}
+
                 {/* Bubble hoặc Emoji-only */}
                 {message.type === "TEXT" &&
                 !message.isRecalled &&
@@ -1356,9 +2091,11 @@ export function MessageBubble({
                                             ? "bg-transparent text-black dark:text-white"
                                             : message.type === "FILE"
                                               ? "bg-transparent text-black dark:text-white"
-                                              : isOwn
-                                                ? "bg-blue-500 text-white"
-                                                : "bg-gray-200 dark:bg-gray-700 text-black dark:text-white"
+                                              : groupInviteUrl
+                                                ? "bg-transparent text-black dark:text-white"
+                                                : isOwn
+                                                  ? "bg-blue-500 text-white"
+                                                  : "bg-gray-200 dark:bg-gray-700 text-black dark:text-white"
                                 } transition-all duration-300 ${highlightedBubbleClass}`}
                             >
                                 {message.isRecalled ? (
@@ -1401,12 +2138,7 @@ export function MessageBubble({
                                                                     ? "h-72 md:h-80 rounded-2xl"
                                                                     : "aspect-square rounded-xl"
                                                             }`}
-                                                            onClick={() =>
-                                                                window.open(
-                                                                    url,
-                                                                    "_blank",
-                                                                )
-                                                            }
+                                                            onClick={() => onOpenMediaViewer?.(url)}
                                                         >
                                                             <img
                                                                 src={url}
@@ -1433,12 +2165,7 @@ export function MessageBubble({
                                         <button
                                             type="button"
                                             className="block w-64 sm:w-72 md:w-76 h-72 md:h-80 cursor-zoom-in"
-                                            onClick={() =>
-                                                window.open(
-                                                    message.content,
-                                                    "_blank",
-                                                )
-                                            }
+                                            onClick={() => onOpenMediaViewer?.(message.content)}
                                         >
                                             <img
                                                 src={message.content}
@@ -1667,6 +2394,104 @@ export function MessageBubble({
                                             </p>
                                         )}
                                     </div>
+                                ) : message.type === "POLL" && localPoll ? (
+                                    <div className="w-80 max-w-[78vw] px-3 py-3 text-gray-900 dark:text-gray-100">
+                                        <div className="mb-2 flex items-center gap-2">
+                                            <span className="flex h-8 w-8 items-center justify-center rounded-md bg-emerald-50 text-emerald-600 dark:bg-emerald-500/15 dark:text-emerald-300">
+                                                <ListChecks size={18} />
+                                            </span>
+                                            <span className="min-w-0">
+                                                <span className="block truncate text-sm font-semibold">
+                                                    {localPoll.title ||
+                                                        message.content}
+                                                </span>
+                                                <span className="text-xs text-gray-500 dark:text-gray-400">
+                                                    {localPoll.allowMultipleChoices
+                                                        ? "Chọn nhiều phương án"
+                                                        : "Chọn một phương án"}
+                                                </span>
+                                            </span>
+                                        </div>
+
+                                        <div className="space-y-2">
+                                            {localPoll.options.map((option) => {
+                                                const selected =
+                                                    localPoll.currentUserOptionIds?.includes(
+                                                        option.id,
+                                                    ) ??
+                                                    option.selectedByCurrentUser;
+                                                const maxVotes = Math.max(
+                                                    1,
+                                                    ...localPoll.options.map(
+                                                        (item) =>
+                                                            item.voteCount,
+                                                    ),
+                                                );
+                                                const percent =
+                                                    localPoll.totalVoteCount > 0
+                                                        ? Math.round(
+                                                              (option.voteCount /
+                                                                  localPoll.totalVoteCount) *
+                                                                  100,
+                                                          )
+                                                        : 0;
+                                                return (
+                                                    <button
+                                                        key={option.id}
+                                                        type="button"
+                                                        disabled={
+                                                            pollUpdating ||
+                                                            pollEnded
+                                                        }
+                                                        onClick={(event) => {
+                                                            event.stopPropagation();
+                                                            void handleTogglePollOption(
+                                                                option.id,
+                                                            );
+                                                        }}
+                                                        className={`relative w-full overflow-hidden rounded-md border px-3 py-2 text-left text-sm transition-colors ${
+                                                            selected
+                                                                ? "border-blue-500 bg-blue-50 dark:bg-blue-500/15"
+                                                                : "border-gray-200 bg-gray-100 hover:bg-gray-200 dark:border-gray-700 dark:bg-gray-800 dark:hover:bg-gray-700"
+                                                        } disabled:cursor-not-allowed disabled:opacity-70`}
+                                                    >
+                                                        <span
+                                                            className="absolute inset-y-0 left-0 bg-blue-500/10"
+                                                            style={{
+                                                                width: `${Math.max(
+                                                                    4,
+                                                                    (option.voteCount /
+                                                                        maxVotes) *
+                                                                        100,
+                                                                )}%`,
+                                                            }}
+                                                        />
+                                                        <span className="relative flex items-center justify-between gap-3">
+                                                            <span className="truncate">
+                                                                {option.text}
+                                                            </span>
+                                                            <span className="shrink-0 text-xs text-gray-500 dark:text-gray-400">
+                                                                {
+                                                                    option.voteCount
+                                                                }{" "}
+                                                                · {percent}%
+                                                            </span>
+                                                        </span>
+                                                    </button>
+                                                );
+                                            })}
+                                        </div>
+
+                                        <div className="mt-2 flex items-center justify-between text-xs text-gray-500 dark:text-gray-400">
+                                            <span>
+                                                {localPoll.totalVoteCount} lượt
+                                                chọn
+                                            </span>
+                                            {pollEnded && (
+                                                <span>Đã đóng</span>
+                                            )}
+                                        </div>
+                                    </div>
                                 ) : message.type === "CALL" ? (
                                     <button
                                         type="button"
@@ -1720,9 +2545,74 @@ export function MessageBubble({
                                             Gọi lại
                                         </span>
                                     </button>
+                                ) : groupInviteUrl ? (
+                                    <button
+                                        type="button"
+                                        onClick={openInvitePreview}
+                                        className="block w-80 max-w-[78vw] overflow-hidden rounded-2xl bg-blue-50 text-left text-gray-900 shadow-md ring-1 ring-blue-200 transition-colors hover:bg-blue-100 dark:bg-blue-950/30 dark:text-gray-100 dark:ring-blue-900/60 dark:hover:bg-blue-950/45"
+                                    >
+                                        <div className="mx-3 mt-3 overflow-hidden rounded-xl bg-blue-600">
+                                            <div className="relative flex h-28 items-center gap-3 overflow-hidden px-4 text-white">
+                                                <span className="absolute -left-8 top-0 h-36 w-36 rounded-full bg-white/10" />
+                                                <span className="absolute left-12 top-[-2rem] h-44 w-44 rounded-full bg-white/10" />
+                                                <span className="relative flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-white/95 text-gray-400 ring-2 ring-white/80">
+                                                    <Users size={28} />
+                                                </span>
+                                                <span className="relative min-w-0">
+                                                    <span className="block text-sm font-medium text-white/85">
+                                                        Nhóm
+                                                    </span>
+                                                    <span className="mt-1 block truncate text-lg font-bold">
+                                                        Link tham gia nhóm
+                                                    </span>
+                                                </span>
+                                            </div>
+                                        </div>
+                                        <div className="px-3 py-2.5">
+                                            <div className="flex items-center justify-between gap-3">
+                                                <span className="min-w-0">
+                                                    <span className="block truncate text-sm font-semibold text-gray-900 dark:text-gray-100">
+                                                        Mời tham gia nhóm
+                                                    </span>
+                                                    <span className="mt-0.5 block text-xs text-gray-500 dark:text-gray-400">
+                                                        Bấm để xem thông tin
+                                                        nhóm
+                                                    </span>
+                                                </span>
+                                                <ExternalLink
+                                                    size={16}
+                                                    className="shrink-0 text-gray-400"
+                                                />
+                                            </div>
+                                            {isLastInGroup && (
+                                                <span className="mt-1 block text-right text-[11px] text-gray-400 dark:text-gray-500">
+                                                    {timeStr}
+                                                </span>
+                                            )}
+                                        </div>
+                                    </button>
                                 ) : (
-                                    <p className="px-4 py-1.5 text-sm">
-                                        {message.content}
+                                    <p className="whitespace-pre-wrap px-4 py-1.5 text-sm break-words">
+                                        {renderTextWithLinks(
+                                            visibleTextContent,
+                                            isOwn,
+                                        )}
+                                        {shouldCollapseText && (
+                                            <button
+                                                type="button"
+                                                className={`ml-1 inline text-sm font-semibold hover:underline ${
+                                                    isOwn
+                                                        ? "text-white/90"
+                                                        : "text-blue-600 dark:text-blue-300"
+                                                }`}
+                                                onClick={(event) => {
+                                                    event.stopPropagation();
+                                                    setTextExpanded((value) => !value);
+                                                }}
+                                            >
+                                                {textExpanded ? "Thu gọn" : "Xem thêm"}
+                                            </button>
+                                        )}
                                     </p>
                                 )}
                             </div>
@@ -1743,37 +2633,73 @@ export function MessageBubble({
                     </div>
                 )}
 
-                {/* Metadata dưới bubble cho tin người gửi */}
-                {showIncomingMetaRow && (
+                {/* Reactions indicator */}
+                {message.iconName && message.iconName.length > 0 && (
                     <div
-                        className={`flex items-center gap-2 px-1 ${incomingMetaSpacingClass}`}
+                        className={`flex items-center gap-1 mt-0.5 px-1 relative z-10 ${isOwn ? "self-end" : "self-start"}`}
                     >
-                        <img
-                            src={senderAvatar || defaultAvatarSmallUrl}
-                            alt={senderName}
-                            className="h-5 w-5 rounded-full object-cover ring-1 ring-gray-200/80 dark:ring-gray-700/80"
-                        />
-                        <span
-                            className={`max-w-36 truncate text-xs ${incomingNameWeightClass} text-gray-600 dark:text-gray-300`}
+                        <div
+                            className="flex items-center bg-white dark:bg-gray-800 shadow-[0_2px_8px_rgba(0,0,0,0.08)] dark:shadow-[0_2px_8px_rgba(0,0,0,0.5)] rounded-full px-1.5 py-0.5 border border-gray-100 dark:border-gray-700 cursor-pointer hover:scale-105 transition-transform active:scale-95"
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                setReactionDetailOpen(true);
+                            }}
                         >
-                            {senderName}
-                        </span>
-                        {timeStr && !isFileMessageBubble && (
-                            <span className="text-xs text-gray-400 dark:text-gray-500">
-                                {timeStr}
-                            </span>
-                        )}
+                            {message.iconName.slice(0, 3).map((reaction, i) => (
+                                <span
+                                    key={i}
+                                    className="text-[13px] leading-tight flex-shrink-0 -mr-0.5 last:mr-0"
+                                >
+                                    {reaction.name}
+                                </span>
+                            ))}
+                            {message.iconName.reduce(
+                                (sum, r) =>
+                                    sum +
+                                    r.user.reduce(
+                                        (acc, u) => acc + u.quantity,
+                                        0,
+                                    ),
+                                0,
+                            ) > 1 && (
+                                <span className="text-[11px] font-medium text-gray-600 dark:text-gray-300 ml-1.5 leading-tight">
+                                    {message.iconName.reduce(
+                                        (sum, r) =>
+                                            sum +
+                                            r.user.reduce(
+                                                (acc, u) => acc + u.quantity,
+                                                0,
+                                            ),
+                                        0,
+                                    )}
+                                </span>
+                            )}
+                        </div>
                     </div>
                 )}
 
                 {/* Giờ dưới bubble cho tin nhắn của mình */}
                 {!message.isRecalled &&
                     isLastInGroup &&
+                    false &&
                     isOwn &&
-                    !isFileMessageBubble && (
+                    !isFileMessageBubble &&
+                    !groupInviteUrl && (
                         <p
                             className={`text-xs mt-0.5 px-1 text-gray-400  dark:text-gray-500 ${isOwn ? "self-end" : "self-start"}`}
                         >
+                            {timeStr}
+                        </p>
+                    )}
+
+                {/* Giờ dưới bubble cho tin nhắn phía đối diện */}
+                {!message.isRecalled &&
+                    isLastInGroup &&
+                    !isOwn &&
+                    !isFileMessageBubble &&
+                    !groupInviteUrl &&
+                    message.type !== "CALL" && (
+                        <p className="mt-1 inline-flex h-5 self-start rounded-full bg-gray-300 px-2 text-[11px] font-semibold leading-5 text-white shadow-sm dark:bg-gray-800 dark:text-gray-300">
                             {timeStr}
                         </p>
                     )}
@@ -1791,6 +2717,101 @@ export function MessageBubble({
                     </div>
                 )}
             </div>
+            {inviteModalOpen && (
+                <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/45 px-4 py-6">
+                    <div className="w-full max-w-sm overflow-hidden rounded-xl bg-white shadow-2xl ring-1 ring-gray-200 dark:bg-[#111111] dark:ring-[#303030]">
+                        {inviteLoading ? (
+                            <div className="flex h-64 items-center justify-center">
+                                <Loader2 className="h-8 w-8 animate-spin text-blue-600" />
+                            </div>
+                        ) : inviteError ? (
+                            <div className="px-6 py-8 text-center">
+                                <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-red-50 text-red-500 dark:bg-red-950/30">
+                                    <ShieldCheck size={24} />
+                                </div>
+                                <h3 className="text-lg font-bold text-gray-950 dark:text-white">
+                                    Link không khả dụng
+                                </h3>
+                                <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">
+                                    {inviteError}
+                                </p>
+                                <button
+                                    type="button"
+                                    onClick={() => setInviteModalOpen(false)}
+                                    className="mt-6 h-10 rounded-md bg-gray-100 px-5 text-sm font-semibold text-gray-800 hover:bg-gray-200 dark:bg-[#262626] dark:text-gray-100 dark:hover:bg-[#333333]"
+                                >
+                                    Đóng
+                                </button>
+                            </div>
+                        ) : invitePreview ? (
+                            <div className="px-6 py-7 text-center">
+                                <img
+                                    src={invitePreview.imageUrl}
+                                    alt={invitePreview.name}
+                                    className="mx-auto h-20 w-20 rounded-full object-cover ring-1 ring-gray-200 dark:ring-[#303030]"
+                                />
+                                <h3 className="mt-4 text-xl font-bold text-gray-950 dark:text-white">
+                                    {invitePreview.name}
+                                </h3>
+                                <p className="mt-2 inline-flex items-center justify-center gap-2 text-sm text-gray-500 dark:text-gray-400">
+                                    <Users size={16} />
+                                    {invitePreview.memberCount} thành viên
+                                </p>
+                                {invitePreview.isJoinApprovalRequired && (
+                                    <p className="mt-4 rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-700 dark:bg-amber-950/25 dark:text-amber-300">
+                                        Nhóm này yêu cầu Quản trị viên phê duyệt
+                                    </p>
+                                )}
+                                <div className="mt-7 grid grid-cols-2 gap-3">
+                                    <button
+                                        type="button"
+                                        disabled={
+                                            inviteJoining || inviteCancelling
+                                        }
+                                        onClick={() =>
+                                            setInviteModalOpen(false)
+                                        }
+                                        className="h-10 rounded-md bg-gray-100 text-sm font-semibold text-gray-800 hover:bg-gray-200 disabled:opacity-60 dark:bg-[#262626] dark:text-gray-100 dark:hover:bg-[#333333]"
+                                    >
+                                        Đóng
+                                    </button>
+                                    <button
+                                        type="button"
+                                        disabled={
+                                            inviteJoining || inviteCancelling
+                                        }
+                                        onClick={
+                                            inviteUserStatus === "PENDING"
+                                                ? handleCancelInviteRequest
+                                                : handleJoinInvite
+                                        }
+                                        className={`h-10 rounded-md text-sm font-semibold disabled:cursor-not-allowed ${
+                                            inviteUserStatus === "PENDING"
+                                                ? "bg-gray-200 text-gray-700 hover:bg-gray-300 disabled:opacity-70 dark:bg-[#262626] dark:text-gray-200 dark:hover:bg-[#333333]"
+                                                : "bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-70"
+                                        }`}
+                                    >
+                                        {inviteUserStatus === "PENDING"
+                                            ? inviteCancelling
+                                                ? "Đang hủy..."
+                                                : "Hủy yêu cầu"
+                                            : inviteJoining
+                                              ? "Đang tham gia..."
+                                              : "Tham gia nhóm"}
+                                    </button>
+                                </div>
+                            </div>
+                        ) : null}
+                    </div>
+                </div>
+            )}
+
+            <ReactionDetailModal
+                open={reactionDetailOpen}
+                onClose={() => setReactionDetailOpen(false)}
+                reactions={message.iconName}
+                membersById={membersById}
+            />
         </div>
     );
 }

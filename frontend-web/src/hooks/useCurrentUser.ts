@@ -16,17 +16,19 @@ interface CurrentUser {
 }
 
 // Helper: convert phone to international format
-const convertPhoneToInternational = (phone: string | undefined): string => {
-  if (!phone) return '';
-  if (phone.startsWith('+84')) return phone;
-  if (phone.startsWith('0')) return '+84' + phone.substring(1);
-  if (phone.startsWith('84')) return '+' + phone;
-  return '+84' + phone;
+export const convertPhoneToInternational = (phone: string | undefined): string => {
+    if (!phone) return '';
+    const normalized = phone.trim().replace(/\s+/g, '');
+    if (!normalized) return '';
+    if (normalized.startsWith('+84')) return normalized;
+    if (normalized.startsWith('0')) return '+84' + normalized.substring(1);
+    if (normalized.startsWith('84')) return '+' + normalized;
+    return '+84' + normalized;
 };
 
 export function useCurrentUser() {
     const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
-    const [loading, setLoading] = useState(true);
+    const [, setLoading] = useState(true);
     const fetchUserDataRef = useRef<() => Promise<void>>(null!);
 
     // Fetch current user from API - wrapped in useCallback
@@ -71,6 +73,21 @@ export function useCurrentUser() {
             return;
         }
 
+        const internationalPhone = convertPhoneToInternational(currentUser.phone);
+        console.log("🟡 International phone:", internationalPhone);
+
+        const handleProfileUpdate = async (updatedData: any) => {
+            console.log("🟢🟢🟢 PROFILE UPDATE EVENT RECEIVED 🟢🟢🟢");
+            console.log("📱 Updated data from WebSocket:", updatedData);
+
+            // Refresh current user data using ref (always latest)
+            console.log("🟡 Calling fetchUserData to refresh...");
+            await fetchUserDataRef.current();
+            console.log("✅ fetchUserData completed");
+        };
+
+        let cancelled = false;
+
         const setupProfileUpdateListener = async () => {
             try {
                 console.log("🟡 Setting up profile update listener for phone:", currentUser.phone);
@@ -84,20 +101,7 @@ export function useCurrentUser() {
                     console.log("🟢 WebSocket connected");
                 }
 
-                // Convert phone to international format
-                const internationalPhone = convertPhoneToInternational(currentUser.phone);
-                console.log("🟡 International phone:", internationalPhone);
-
-                // Handle profile update event - call ref instead of closure
-                const handleProfileUpdate = async (updatedData: any) => {
-                    console.log("🟢🟢🟢 PROFILE UPDATE EVENT RECEIVED 🟢🟢🟢");
-                    console.log("📱 Updated data from WebSocket:", updatedData);
-
-                    // Refresh current user data using ref (always latest)
-                    console.log("🟡 Calling fetchUserData to refresh...");
-                    await fetchUserDataRef.current();
-                    console.log("✅ fetchUserData completed");
-                };
+                if (cancelled) return;
 
                 // Subscribe to profile updates
                 console.log("🟡 Subscribing to: /topic/user/" + internationalPhone + "/profile-update");
@@ -115,11 +119,12 @@ export function useCurrentUser() {
 
         // Cleanup on unmount or when currentUser changes
         return () => {
-            if (currentUser?.phone) {
-                const internationalPhone = convertPhoneToInternational(currentUser.phone);
-                console.log("🟠 Unsubscribing from profile updates");
-                websocketService.unsubscribeFromProfileUpdates(internationalPhone);
-            }
+            cancelled = true;
+            console.log("🟠 Unsubscribing from profile updates");
+            websocketService.unsubscribeFromProfileUpdates(
+                internationalPhone,
+                handleProfileUpdate,
+            );
         };
     }, [currentUser?.phone]);
 

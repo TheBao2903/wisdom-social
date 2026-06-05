@@ -1,10 +1,24 @@
 import { getCookie, setCookie, clearAuthStorage } from './cookies';
 import type  { UserRequestLogin, UserRequestRegister, UserRequestForgotPassword, UserRequestResetPassword } from '../services/userService';
 import userService from '../services/userService';
+import websocketService from '../services/websocket';
 
 const AUTH_KEY = 'authed';
 const USER_KEY = 'current_user';
 const ACCESS_TOKEN_KEY = 'accessToken';
+
+export class AuthError extends Error {
+    remainingSeconds?: number;
+    lockReason?: string;
+    code?: string;
+    constructor(message: string, opts: { remainingSeconds?: number; lockReason?: string; code?: string } = {}) {
+        super(message);
+        this.name = 'AuthError';
+        this.remainingSeconds = opts.remainingSeconds;
+        this.lockReason = opts.lockReason;
+        this.code = opts.code;
+    }
+}
 
 // Callback để thông báo khi auth state thay đổi
 let authChangeCallback: (() => void) | null = null;
@@ -106,6 +120,15 @@ export const confirmRegister = async (phone: string, otp: string): Promise<boole
         return true;
     } catch (error: any) {
         console.error('Confirm register error:', error);
+        const status = error?.response?.status;
+        const errors = error?.response?.data?.errors;
+        if (status === 429 && errors?.remainingSeconds) {
+            const minutes = Math.ceil(errors.remainingSeconds / 60);
+            throw new AuthError(
+                `Nhập sai OTP quá nhiều lần. Thử lại sau ${minutes} phút.`,
+                { remainingSeconds: errors.remainingSeconds }
+            );
+        }
         if (error.response?.data?.message) {
             throw new Error(mapRegisterOtpError(error.response.data.message));
         }
@@ -147,8 +170,27 @@ export const login = async (phone: string, password: string): Promise<boolean> =
         return true;
     } catch (error: any) {
         console.error('Login error:', error);
-        if (error.response?.data?.message) {
-            throw new Error(mapLoginError(error.response.data.message));
+        const status = error?.response?.status;
+        const errors = error?.response?.data?.errors;
+        const backendMessage = error?.response?.data?.message;
+
+        if (status === 429 && errors?.remainingSeconds) {
+            const minutes = Math.ceil(errors.remainingSeconds / 60);
+            throw new AuthError(
+                `Tài khoản bị khóa tạm do nhập sai quá nhiều lần. Thử lại sau ${minutes} phút.`,
+                { remainingSeconds: errors.remainingSeconds, code: 'RATE_LIMITED' }
+            );
+        }
+
+        if (status === 403 && errors?.code === 'ACCOUNT_LOCKED') {
+            throw new AuthError(
+                `Tài khoản đã bị khóa: ${errors.lockReason || 'Vi phạm chính sách'}`,
+                { code: 'ACCOUNT_LOCKED', lockReason: errors.lockReason, remainingSeconds: errors.remainingSeconds }
+            );
+        }
+
+        if (backendMessage) {
+            throw new Error(mapLoginError(backendMessage));
         }
         if (error.message) {
             throw new Error(mapLoginError(error.message));
@@ -162,6 +204,8 @@ export const getToken = (): string | null => {
 };
 
 export const logout = async (): Promise<void> => {
+    websocketService.disconnect();
+
     // Clear client data immediately so redirect/navigation cannot interrupt cleanup.
     clearAuthStorage();
 
@@ -175,6 +219,26 @@ export const logout = async (): Promise<void> => {
     // Trigger callback để cập nhật AuthContext
     if (authChangeCallback) {
         authChangeCallback();
+    }
+};
+
+export const logoutAllDevices = async (): Promise<{ success: boolean; message?: string }> => {
+    try {
+        await userService.logoutAll();
+        clearAuthStorage();
+        if (authChangeCallback) {
+            authChangeCallback();
+        }
+        return { success: true };
+    } catch (error: any) {
+        console.error('Logout all devices error:', error);
+        // Still clear local storage even if API fails so this device is signed out
+        clearAuthStorage();
+        if (authChangeCallback) {
+            authChangeCallback();
+        }
+        const msg = error?.response?.data?.message || error?.message || '';
+        return { success: false, message: msg || 'Không thể đăng xuất tất cả thiết bị.' };
     }
 };
 
@@ -221,6 +285,15 @@ export const resetPassword = async (
         return true;
     } catch (error: any) {
         console.error('Reset password error:', error);
+        const status = error?.response?.status;
+        const errors = error?.response?.data?.errors;
+        if (status === 429 && errors?.remainingSeconds) {
+            const minutes = Math.ceil(errors.remainingSeconds / 60);
+            throw new AuthError(
+                `Nhập sai OTP quá nhiều lần. Thử lại sau ${minutes} phút.`,
+                { remainingSeconds: errors.remainingSeconds }
+            );
+        }
         if (error.response?.data?.message) {
             throw new Error(mapResetPasswordError(error.response.data.message));
         }

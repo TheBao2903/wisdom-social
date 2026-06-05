@@ -1,15 +1,16 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
-import { 
-    ArrowLeft, Loader2, Users, UserPlus, UserMinus, Shield, 
+import {
+    ArrowLeft, Loader2, Users, UserPlus, UserMinus, Shield,
     Ban, CheckCircle, XCircle, Clock, Trash2, Settings as SettingsIcon,
-    Edit, Image, MoreVertical, FileText, Search, X
+    Edit, FileText, Search, X
 } from "lucide-react";
 import pageService, { type Page, type PageMember } from "../services/pageService";
 import userService from "../services/userService";
 import { useCurrentUser } from "../hooks/useCurrentUser";
 import { buildS3Url } from "../utils/s3";
 import type { User } from "../types";
+import ConfirmModal from "../components/common/ConfirmModal";
 
 type TabType = "members" | "pending" | "posts" | "settings";
 type PageRole = "ADMIN" | "EDITOR" | "MODERATOR" | "ANALYST" | "USER";
@@ -22,15 +23,13 @@ const PAGE_ROLES: { label: string; value: PageRole }[] = [
     { label: 'User', value: 'USER' },
 ];
 
-interface MemberWithUser extends PageMember {
-    user?: User;
-}
+type MemberWithUser = PageMember;
 
 export default function PageSettings() {
     const { pageId } = useParams();
     const navigate = useNavigate();
     const currentUser = useCurrentUser();
-    
+
     const [page, setPage] = useState<Page | null>(null);
     const [activeTab, setActiveTab] = useState<TabType>("members");
     const [members, setMembers] = useState<MemberWithUser[]>([]);
@@ -39,6 +38,16 @@ export default function PageSettings() {
     const [actionLoading, setActionLoading] = useState<number | null>(null);
     const [isOwner, setIsOwner] = useState(false);
     const [isAdmin, setIsAdmin] = useState(false);
+    const [notification, setNotification] = useState<{ title: string; message: string; variant?: "warning" | "default" } | null>(null);
+    const [confirmModal, setConfirmModal] = useState<{
+        title: string; message: string; confirmText: string;
+        variant: "danger" | "warning" | "default";
+        action: () => Promise<void>;
+    } | null>(null);
+
+    const showConfirm = (title: string, message: string, confirmText: string, variant: "danger" | "warning" | "default", action: () => Promise<void>) => {
+        setConfirmModal({ title, message, confirmText, variant, action });
+    };
 
     // Add member modal states
     const [showAddMemberModal, setShowAddMemberModal] = useState(false);
@@ -62,7 +71,7 @@ export default function PageSettings() {
                 const results = await userService.searchUserByUsername(memberSearchQuery);
                 if (results && Array.isArray(results)) {
                     // Filter out existing members
-                    const memberIds = members.map(m => m.userId);
+                    const memberIds = members.map(m => m.user?.id);
                     const filtered = results.filter(u => !memberIds.includes(Number(u.id)));
                     setSearchResults(filtered);
                 } else {
@@ -80,7 +89,7 @@ export default function PageSettings() {
 
     const handleAddMembers = async () => {
         if (!pageId || selectedUsers.length === 0) return;
-        
+
         setIsAddingMembers(true);
         try {
             await Promise.all(
@@ -88,7 +97,7 @@ export default function PageSettings() {
                     pageService.addMember(Number(user.id), Number(pageId), selectedRole)
                 )
             );
-            alert(`Đã thêm ${selectedUsers.length} thành viên!`);
+            setNotification({ title: "Thành công", message: `Đã thêm ${selectedUsers.length} thành viên thành công!`, variant: "default" });
             setShowAddMemberModal(false);
             setMemberSearchQuery("");
             setSearchResults([]);
@@ -98,7 +107,7 @@ export default function PageSettings() {
             loadPageData();
         } catch (error) {
             console.error("Error adding members:", error);
-            alert("Không thể thêm thành viên");
+            setNotification({ title: "Lỗi", message: "Không thể thêm thành viên", variant: "warning" });
         } finally {
             setIsAddingMembers(false);
         }
@@ -135,35 +144,13 @@ export default function PageSettings() {
             setIsOwner(pageOwnerId === currentUserId);
             
             // Check admin role from members list
-            const currentMember = membersList?.find(m => Number(m.userId) === currentUserId);
-            const hasAdminRole = currentMember?.pageRole === "ADMIN" || currentMember?.pageRole === "MODERATOR";
+            const currentMember = membersList?.find(m => Number(m.user?.id) === currentUserId);
+            const hasAdminRole = currentMember?.role === "ADMIN" || currentMember?.role === "MODERATOR";
             setIsAdmin(hasAdminRole || pageOwnerId === currentUserId);
 
-            // Load user info for members
-            const membersWithUsers = await Promise.all(
-                membersList.map(async (member) => {
-                    try {
-                        const user = await userService.getUserProfile(member.userId);
-                        return { ...member, user: user as any };
-                    } catch {
-                        return member;
-                    }
-                })
-            );
-            setMembers(membersWithUsers);
-
-            // Load user info for pending requests
-            const pendingWithUsers = await Promise.all(
-                pendingList.map(async (request) => {
-                    try {
-                        const user = await userService.getUserProfile(request.userId);
-                        return { ...request, user: user as any };
-                    } catch {
-                        return request;
-                    }
-                })
-            );
-            setPendingRequests(pendingWithUsers);
+            // Backend already includes the user object in each PageMember
+            setMembers(membersList);
+            setPendingRequests(pendingList);
         } catch (error) {
             console.error("Error loading page settings:", error);
         } finally {
@@ -177,19 +164,19 @@ export default function PageSettings() {
 
     const handleApproveRequest = async (userId: number) => {
         if (!pageId) return;
-        
+
         setActionLoading(userId);
         try {
             await pageService.approveJoinRequest(Number(pageId), userId);
             // Move from pending to members
-            const approved = pendingRequests.find(r => r.userId === userId);
+            const approved = pendingRequests.find(r => Number(r.user?.id) === userId);
             if (approved) {
-                setPendingRequests(prev => prev.filter(r => r.userId !== userId));
-                setMembers(prev => [...prev, { ...approved, memberStatus: "MEMBER", pageRole: "MEMBER" }]);
+                setPendingRequests(prev => prev.filter(r => Number(r.user?.id) !== userId));
+                setMembers(prev => [...prev, { ...approved, status: "ACTIVE", role: "USER" }]);
             }
         } catch (error) {
             console.error("Error approving request:", error);
-            alert("Không thể duyệt yêu cầu");
+            setNotification({ title: "Lỗi", message: "Không thể duyệt yêu cầu", variant: "warning" });
         } finally {
             setActionLoading(null);
         }
@@ -197,67 +184,77 @@ export default function PageSettings() {
 
     const handleRejectRequest = async (userId: number) => {
         if (!pageId) return;
-        
+
         setActionLoading(userId);
         try {
             await pageService.rejectJoinRequest(Number(pageId), userId);
-            setPendingRequests(prev => prev.filter(r => r.userId !== userId));
+            setPendingRequests(prev => prev.filter(r => Number(r.user?.id) !== userId));
         } catch (error) {
             console.error("Error rejecting request:", error);
-            alert("Không thể từ chối yêu cầu");
+            setNotification({ title: "Lỗi", message: "Không thể từ chối yêu cầu", variant: "warning" });
         } finally {
             setActionLoading(null);
         }
     };
 
-    const handleRemoveMember = async (userId: number) => {
+    const handleRemoveMember = (userId: number) => {
         if (!pageId) return;
-        
-        if (!confirm("Bạn có chắc muốn xóa thành viên này?")) return;
-        
-        setActionLoading(userId);
-        try {
-            await pageService.deleteMember(Number(pageId), userId);
-            setMembers(prev => prev.filter(m => m.userId !== userId));
-        } catch (error) {
-            console.error("Error removing member:", error);
-            alert("Không thể xóa thành viên");
-        } finally {
-            setActionLoading(null);
-        }
+        showConfirm(
+            "Xóa thành viên",
+            "Bạn có chắc muốn xóa thành viên này?",
+            "Xóa",
+            "danger",
+            async () => {
+                setActionLoading(userId);
+                try {
+                    await pageService.deleteMember(Number(pageId), userId);
+                    setMembers(prev => prev.filter(m => Number(m.user?.id) !== userId));
+                } catch (error) {
+                    console.error("Error removing member:", error);
+                    setNotification({ title: "Lỗi", message: "Không thể xóa thành viên", variant: "warning" });
+                } finally {
+                    setActionLoading(null);
+                }
+            }
+        );
     };
 
-    const handleBlockMember = async (userId: number) => {
+    const handleBlockMember = (userId: number) => {
         if (!pageId) return;
-        
-        if (!confirm("Bạn có chắc muốn chặn thành viên này?")) return;
-        
-        setActionLoading(userId);
-        try {
-            await pageService.blockMember(Number(pageId), userId);
-            setMembers(prev => prev.map(m => 
-                m.userId === userId ? { ...m, memberStatus: "BLOCKED" } : m
-            ));
-        } catch (error) {
-            console.error("Error blocking member:", error);
-            alert("Không thể chặn thành viên");
-        } finally {
-            setActionLoading(null);
-        }
+        showConfirm(
+            "Chặn thành viên",
+            "Bạn có chắc muốn chặn thành viên này?",
+            "Chặn",
+            "warning",
+            async () => {
+                setActionLoading(userId);
+                try {
+                    await pageService.blockMember(Number(pageId), userId);
+                    setMembers(prev => prev.map(m =>
+                        Number(m.user?.id) === userId ? { ...m, status: "BLOCKED" } : m
+                    ));
+                } catch (error) {
+                    console.error("Error blocking member:", error);
+                    setNotification({ title: "Lỗi", message: "Không thể chặn thành viên", variant: "warning" });
+                } finally {
+                    setActionLoading(null);
+                }
+            }
+        );
     };
 
     const handleUnblockMember = async (userId: number) => {
         if (!pageId) return;
-        
+
         setActionLoading(userId);
         try {
             await pageService.unblockMember(Number(pageId), userId);
-            setMembers(prev => prev.map(m => 
-                m.userId === userId ? { ...m, memberStatus: "MEMBER" } : m
+            setMembers(prev => prev.map(m =>
+                Number(m.user?.id) === userId ? { ...m, status: "ACTIVE" } : m
             ));
         } catch (error) {
             console.error("Error unblocking member:", error);
-            alert("Không thể bỏ chặn thành viên");
+            setNotification({ title: "Lỗi", message: "Không thể bỏ chặn thành viên", variant: "warning" });
         } finally {
             setActionLoading(null);
         }
@@ -265,16 +262,16 @@ export default function PageSettings() {
 
     const handlePromoteToAdmin = async (userId: number) => {
         if (!pageId) return;
-        
+
         setActionLoading(userId);
         try {
             await pageService.authorizeMember(userId, Number(pageId), "ADMIN");
-            setMembers(prev => prev.map(m => 
-                m.userId === userId ? { ...m, pageRole: "ADMIN" } : m
+            setMembers(prev => prev.map(m =>
+                Number(m.user?.id) === userId ? { ...m, role: "ADMIN" } : m
             ));
         } catch (error) {
             console.error("Error promoting member:", error);
-            alert("Không thể thăng cấp thành viên");
+            setNotification({ title: "Lỗi", message: "Không thể thăng cấp thành viên", variant: "warning" });
         } finally {
             setActionLoading(null);
         }
@@ -282,35 +279,38 @@ export default function PageSettings() {
 
     const handleDemoteToMember = async (userId: number) => {
         if (!pageId) return;
-        
+
         setActionLoading(userId);
         try {
-            await pageService.authorizeMember(userId, Number(pageId), "MEMBER");
-            setMembers(prev => prev.map(m => 
-                m.userId === userId ? { ...m, pageRole: "MEMBER" } : m
+            await pageService.authorizeMember(userId, Number(pageId), "USER");
+            setMembers(prev => prev.map(m =>
+                Number(m.user?.id) === userId ? { ...m, role: "USER" } : m
             ));
         } catch (error) {
             console.error("Error demoting member:", error);
-            alert("Không thể hạ cấp thành viên");
+            setNotification({ title: "Lỗi", message: "Không thể hạ cấp thành viên", variant: "warning" });
         } finally {
             setActionLoading(null);
         }
     };
 
-    const handleDeletePage = async () => {
+    const handleDeletePage = () => {
         if (!pageId || !isOwner) return;
-        
-        if (!confirm("Bạn có chắc muốn XÓA page này? Hành động này không thể hoàn tác!")) return;
-        if (!confirm("Xác nhận lần cuối: XÓA VĨNH VIỄN page này?")) return;
-        
-        try {
-            await pageService.deletePage(Number(pageId));
-            alert("Đã xóa page thành công");
-            navigate("/pages");
-        } catch (error) {
-            console.error("Error deleting page:", error);
-            alert("Không thể xóa page");
-        }
+        showConfirm(
+            "Xóa Page",
+            "Bạn có chắc muốn XÓA VĨNH VIỄN page này? Hành động này KHÔNG THỂ hoàn tác!",
+            "Xóa vĩnh viễn",
+            "danger",
+            async () => {
+                try {
+                    await pageService.deletePage(Number(pageId));
+                    navigate("/pages");
+                } catch (error) {
+                    console.error("Error deleting page:", error);
+                    setNotification({ title: "Lỗi", message: "Không thể xóa page", variant: "warning" });
+                }
+            }
+        );
     };
 
     if (loading) {
@@ -334,6 +334,27 @@ export default function PageSettings() {
 
     return (
         <div className="max-w-4xl mx-auto p-4 md:p-6">
+            {notification && (
+                <ConfirmModal
+                    open
+                    title={notification.title}
+                    message={notification.message}
+                    variant={notification.variant ?? "warning"}
+                    onConfirm={() => setNotification(null)}
+                />
+            )}
+            {confirmModal && (
+                <ConfirmModal
+                    open
+                    title={confirmModal.title}
+                    message={confirmModal.message}
+                    confirmText={confirmModal.confirmText}
+                    cancelText="Hủy"
+                    variant={confirmModal.variant}
+                    onConfirm={async () => { const act = confirmModal.action; setConfirmModal(null); await act(); }}
+                    onCancel={() => setConfirmModal(null)}
+                />
+            )}
             {/* Header */}
             <div className="flex items-center gap-4 mb-6">
                 <button
@@ -423,7 +444,7 @@ export default function PageSettings() {
                     ) : (
                         members.map((member) => (
                             <div
-                                key={member.userId}
+                                key={member.user?.id}
                                 className="flex items-center justify-between p-4 bg-white dark:bg-[#262626] rounded-xl border border-gray-200 dark:border-[#363636]"
                             >
                                 <div className="flex items-center gap-3">
@@ -435,19 +456,19 @@ export default function PageSettings() {
                                     <div>
                                         <div className="flex items-center gap-2">
                                             <span className="font-medium dark:text-white">
-                                                {member.user?.username || `User #${member.userId}`}
+                                                {member.user?.username || `User #${member.user?.id}`}
                                             </span>
-                                            {member.pageRole === "OWNER" && (
+                                            {member.role === "OWNER" && (
                                                 <span className="px-2 py-0.5 text-xs bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400 rounded-full">
                                                     Chủ sở hữu
                                                 </span>
                                             )}
-                                            {member.pageRole === "ADMIN" && (
+                                            {member.role === "ADMIN" && (
                                                 <span className="px-2 py-0.5 text-xs bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400 rounded-full">
                                                     Quản trị viên
                                                 </span>
                                             )}
-                                            {member.memberStatus === "BLOCKED" && (
+                                            {member.status === "BLOCKED" && (
                                                 <span className="px-2 py-0.5 text-xs bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400 rounded-full">
                                                     Đã chặn
                                                 </span>
@@ -460,15 +481,15 @@ export default function PageSettings() {
                                 </div>
 
                                 {/* Actions */}
-                                {member.pageRole !== "OWNER" && isOwner && (
+                                {member.role !== "OWNER" && isOwner && Number(member.user?.id) !== Number(currentUser?.id) && (
                                     <div className="flex items-center gap-2">
-                                        {actionLoading === member.userId ? (
+                                        {actionLoading === member.user?.id ? (
                                             <Loader2 className="animate-spin text-gray-400" size={20} />
                                         ) : (
                                             <>
-                                                {member.memberStatus === "BLOCKED" ? (
+                                                {member.status === "BLOCKED" ? (
                                                     <button
-                                                        onClick={() => handleUnblockMember(member.userId)}
+                                                        onClick={() => handleUnblockMember(Number(member.user?.id))}
                                                         className="p-2 text-green-500 hover:bg-green-50 dark:hover:bg-green-900/20 rounded-lg"
                                                         title="Bỏ chặn"
                                                     >
@@ -476,9 +497,9 @@ export default function PageSettings() {
                                                     </button>
                                                 ) : (
                                                     <>
-                                                        {member.pageRole === "ADMIN" ? (
+                                                        {member.role === "ADMIN" ? (
                                                             <button
-                                                                onClick={() => handleDemoteToMember(member.userId)}
+                                                                onClick={() => handleDemoteToMember(Number(member.user?.id))}
                                                                 className="p-2 text-yellow-500 hover:bg-yellow-50 dark:hover:bg-yellow-900/20 rounded-lg"
                                                                 title="Hạ cấp"
                                                             >
@@ -486,7 +507,7 @@ export default function PageSettings() {
                                                             </button>
                                                         ) : (
                                                             <button
-                                                                onClick={() => handlePromoteToAdmin(member.userId)}
+                                                                onClick={() => handlePromoteToAdmin(Number(member.user?.id))}
                                                                 className="p-2 text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-lg"
                                                                 title="Thăng cấp Admin"
                                                             >
@@ -494,14 +515,14 @@ export default function PageSettings() {
                                                             </button>
                                                         )}
                                                         <button
-                                                            onClick={() => handleBlockMember(member.userId)}
+                                                            onClick={() => handleBlockMember(Number(member.user?.id))}
                                                             className="p-2 text-orange-500 hover:bg-orange-50 dark:hover:bg-orange-900/20 rounded-lg"
                                                             title="Chặn"
                                                         >
                                                             <Ban size={18} />
                                                         </button>
                                                         <button
-                                                            onClick={() => handleRemoveMember(member.userId)}
+                                                            onClick={() => handleRemoveMember(Number(member.user?.id))}
                                                             className="p-2 text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg"
                                                             title="Xóa"
                                                         >
@@ -529,7 +550,7 @@ export default function PageSettings() {
                     ) : (
                         pendingRequests.map((request) => (
                             <div
-                                key={request.userId}
+                                key={request.user?.id}
                                 className="flex items-center justify-between p-4 bg-white dark:bg-[#262626] rounded-xl border border-gray-200 dark:border-[#363636]"
                             >
                                 <div className="flex items-center gap-3">
@@ -540,7 +561,7 @@ export default function PageSettings() {
                                     />
                                     <div>
                                         <span className="font-medium dark:text-white">
-                                            {request.user?.username || `User #${request.userId}`}
+                                            {request.user?.username || `User #${request.user?.id}`}
                                         </span>
                                         <p className="text-sm text-gray-500 dark:text-gray-400">
                                             {request.user?.fullName || request.user?.name}
@@ -549,19 +570,19 @@ export default function PageSettings() {
                                 </div>
 
                                 <div className="flex items-center gap-2">
-                                    {actionLoading === request.userId ? (
+                                    {actionLoading === request.user?.id ? (
                                         <Loader2 className="animate-spin text-gray-400" size={20} />
                                     ) : (
                                         <>
                                             <button
-                                                onClick={() => handleApproveRequest(request.userId)}
+                                                onClick={() => handleApproveRequest(Number(request.user?.id))}
                                                 className="flex items-center gap-1 px-3 py-1.5 bg-green-500 text-white rounded-lg hover:bg-green-600 text-sm"
                                             >
                                                 <CheckCircle size={16} />
                                                 Duyệt
                                             </button>
                                             <button
-                                                onClick={() => handleRejectRequest(request.userId)}
+                                                onClick={() => handleRejectRequest(Number(request.user?.id))}
                                                 className="flex items-center gap-1 px-3 py-1.5 bg-red-500 text-white rounded-lg hover:bg-red-600 text-sm"
                                             >
                                                 <XCircle size={16} />

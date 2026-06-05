@@ -47,6 +47,10 @@ export interface UserResponseLogin {
     birthday?: string;
     gender?: string;
     createdAt: string;
+    // Có khi tài khoản đang ở trạng thái chờ xóa (backend trả kèm lúc login).
+    deletionPending?: boolean;
+    deletionRemainingDays?: number;
+    deletionScheduledFor?: string;
 }
 
 export interface UserRequestUpdate {
@@ -56,6 +60,7 @@ export interface UserRequestUpdate {
     avatarUrl?: string;
     birthday?: string;
     gender?: string;
+    privacyProfile?: 'PUBLIC' | 'FRIENDS' | 'ONLY_ME';
 }
 
 export interface UserRequestForgotPassword {
@@ -104,7 +109,8 @@ export const userService = {
     },
 
     async login(data: UserRequestLogin): Promise<UserResponseLogin> {
-        const response = await axiosClient.post(`auth/login`, data);
+        // Gắn nền tảng để backend áp "1 phiên mỗi nền tảng" (web đá web, mobile đá mobile).
+        const response = await axiosClient.post(`auth/login`, { ...data, deviceType: "WEB", deviceName: "Web Browser" });
         const loginData = response.data.data;
 
         if (loginData.token) {
@@ -123,6 +129,10 @@ export const userService = {
 
     async logout(): Promise<void> {
         await axiosClient.post(`auth/logout`, {});
+    },
+
+    async logoutAll(): Promise<void> {
+        await axiosClient.post(`auth/logout-all`, {});
     },
 
     async refreshToken(): Promise<string> {
@@ -158,7 +168,7 @@ export const userService = {
         return response.data.data;
     },
 
-        async getAllUsersSearch(id:number): Promise<User[]> {
+    async getAllUsersSearch(id: number): Promise<User[]> {
         const response = await axiosClient.get(`auth/users/${id}`);
         return response.data.data;
     },
@@ -200,6 +210,11 @@ export const userService = {
 
     async getUsersBlockedByMe(userId: string | number): Promise<User[]> {
         const response = await axiosClient.get(`auth/users/blocked/${userId}`);
+        return response.data.data;
+    },
+
+    async getProfileById(id: string | number): Promise<any> {
+        const response = await axiosClient.get(`auth/user/${id}`);
         return response.data.data;
     },
 };

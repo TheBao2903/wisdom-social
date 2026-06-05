@@ -5,6 +5,7 @@ import {
     clearStorage,
     getIdToken,
     getRefreshToken,
+    getToken,
     saveIdToken,
 } from "@/utils/storage";
 
@@ -35,7 +36,7 @@ function resolveExpoLanHost(): string | null {
 
 const EXPO_LAN_HOST = resolveExpoLanHost();
 
-const API_URL = Platform.select({
+const resolvedLocalApiUrl = Platform.select({
     android: EXPO_LAN_HOST
         ? `http://${EXPO_LAN_HOST}:8080/api`
         : "http://10.0.2.2:8080/api",
@@ -47,10 +48,16 @@ const API_URL = Platform.select({
         : "http://192.168.1.153:8080/api",
 });
 
+const API_URL =
+    process.env.EXPO_PUBLIC_API_URL ||
+    resolvedLocalApiUrl ||
+    "http://10.0.2.2:8080/api";
+
 const PUBLIC_ENDPOINTS = [
     "/auth/login",
     "/auth/register",
     "/auth/confirm",
+    "/auth/resend-otp",
     "/auth/forgot-password",
     "/auth/reset-password",
     "/session/qr-login/confirm",
@@ -157,6 +164,14 @@ apiClient.interceptors.request.use(
 
         try {
             let idToken = await getIdToken();
+
+            // Fallback: if idToken is not saved, try the accessToken key
+            // (loginWithPhone saves the main JWT via saveToken → "accessToken" key,
+            //  but this interceptor originally only read "idToken" key)
+            if (!idToken) {
+                idToken = await getToken();
+            }
+
             const refreshToken = await getRefreshToken();
 
             if (idToken && isTokenExpiringSoon(idToken, 60)) {
@@ -189,7 +204,7 @@ apiClient.interceptors.response.use(
         const status = error.response?.status;
 
         if (
-            (status === 401 || status === 403) &&
+            status === 401 &&
             !originalRequest?._retry &&
             !isPublicEndpoint(originalRequest?.url)
         ) {
@@ -205,6 +220,16 @@ apiClient.interceptors.response.use(
                 await clearStorage();
             } catch {
                 await clearStorage();
+            }
+        }
+
+        // When a 403 arrives after logout (storage already cleared), the request
+        // is a stale in-flight call with an invalidated token — suppress it silently
+        // instead of triggering an unhandled rejection in callers without try/catch.
+        if (status === 403 && !isPublicEndpoint(originalRequest?.url)) {
+            const storedToken = (await getIdToken()) ?? (await getToken());
+            if (!storedToken) {
+                return Promise.resolve({ data: null, status: 403, headers: {}, config: originalRequest, request: error.request });
             }
         }
 

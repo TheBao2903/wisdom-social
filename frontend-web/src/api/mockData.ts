@@ -1,12 +1,10 @@
-import type { User, Post, Story, Chat, Message, Notification } from '../types';
-
 // Mock Users
-export const mockUsers: User[] = [
+export const mockUsers = [
     {
-        id: '1',
+        id: 1,
         username: 'john_doe',
         fullName: 'John Doe',
-        avatar: 'https://i.pravatar.cc/150?img=1',
+        avatarUrl: 'https://i.pravatar.cc/150?img=1',
         bio: 'Photography enthusiast 📷 | Travel lover ✈️',
         isVerified: true,
         followersCount: 1234,
@@ -14,30 +12,30 @@ export const mockUsers: User[] = [
         postsCount: 89,
     },
     {
-        id: '2',
+        id: 2,
         username: 'jane_smith',
         fullName: 'Jane Smith',
-        avatar: 'https://i.pravatar.cc/150?img=2',
+        avatarUrl: 'https://i.pravatar.cc/150?img=2',
         bio: 'Digital artist 🎨 | Coffee addict ☕',
         followersCount: 2345,
         followingCount: 123,
         postsCount: 145,
     },
     {
-        id: '3',
+        id: 3,
         username: 'mike_wilson',
         fullName: 'Mike Wilson',
-        avatar: 'https://i.pravatar.cc/150?img=3',
+        avatarUrl: 'https://i.pravatar.cc/150?img=3',
         bio: 'Fitness coach 💪 | Healthy lifestyle',
         followersCount: 5678,
         followingCount: 234,
         postsCount: 234,
     },
     {
-        id: '4',
+        id: 4,
         username: 'sarah_jones',
         fullName: 'Sarah Jones',
-        avatar: 'https://i.pravatar.cc/150?img=4',
+        avatarUrl: 'https://i.pravatar.cc/150?img=4',
         bio: 'Fashion designer 👗 | Style blogger',
         isVerified: true,
         followersCount: 8901,
@@ -45,10 +43,10 @@ export const mockUsers: User[] = [
         postsCount: 567,
     },
     {
-        id: '5',
+        id: 5,
         username: 'robert_fox',
         fullName: 'Robert Fox',
-        avatar: 'https://i.pravatar.cc/150?img=5',
+        avatarUrl: 'https://i.pravatar.cc/150?img=5',
         bio: 'Software Engineer 💻 | Tech enthusiast',
         followersCount: 456,
         followingCount: 789,
@@ -57,10 +55,10 @@ export const mockUsers: User[] = [
 ];
 
 // Current User (logged in user)
-export const currentUser: User = mockUsers[4]; // Robert Fox
+export const currentUser = mockUsers[4]; // Robert Fox
 
 // Mock Posts
-export const mockPosts: Post[] = [
+export const mockPosts = [
     {
         id: '1',
         user: mockUsers[0],
@@ -88,7 +86,7 @@ export const mockPosts: Post[] = [
         createdAt: '3h ago',
         isLiked: false,
         isSaved: false,
-        privacy: 'PUBLIC',
+        privacy: 'PUBLIC' as const,
     },
     {
         id: '2',
@@ -102,7 +100,7 @@ export const mockPosts: Post[] = [
         createdAt: '5h ago',
         isLiked: true,
         isSaved: false,
-        privacy: 'FRIENDS',
+        privacy: 'FRIENDS' as const,
     },
     {
         id: '3',
@@ -124,7 +122,7 @@ export const mockPosts: Post[] = [
         createdAt: '6h ago',
         isLiked: true,
         isSaved: true,
-        privacy: 'PUBLIC',
+        privacy: 'PUBLIC' as const,
     },
     {
         id: '4',
@@ -138,7 +136,7 @@ export const mockPosts: Post[] = [
         createdAt: '8h ago',
         isLiked: false,
         isSaved: false,
-        privacy: 'PRIVATE',
+        privacy: 'ONLY_ME' as const,
     },
     {
         id: '5',
@@ -167,12 +165,12 @@ export const mockPosts: Post[] = [
         createdAt: '12h ago',
         isLiked: false,
         isSaved: true,
-        privacy: 'SPECIFIC',
+        privacy: 'SPECIFIC' as const,
     },
 ];
 
 // Mock Stories
-export const mockStories: Story[] = [
+export const mockStories = [
     {
         id: 's1',
         user: mockUsers[0],
@@ -204,7 +202,7 @@ export const mockStories: Story[] = [
 ];
 
 // Mock Chats
-const mockMessages: Message[] = [
+const mockMessages = [
     {
         id: 'm1',
         senderId: '1',
@@ -228,7 +226,7 @@ const mockMessages: Message[] = [
     },
 ];
 
-export const mockChats: Chat[] = [
+export const mockChats = [
     {
         id: '1',
         user: mockUsers[0],
@@ -274,8 +272,7 @@ export const mockChats: Chat[] = [
 ];
 
 // Get messages for a specific chat
-export const getMessagesForChat = (chatId: string): Message[] => {
-    // In a real app, this would fetch from an API
+export const getMessagesForChat = (chatId: string) => {
     if (chatId === '1') {
         return mockMessages;
     }
@@ -291,60 +288,61 @@ export const getMessagesForChat = (chatId: string): Message[] => {
 };
 
 // Mock Notifications
-export const mockNotifications: Notification[] = [
+export const mockNotifications = [
     {
         id: 'n1',
-        type: 'like',
-        user: mockUsers[0],
-        post: mockPosts[2],
-        text: 'liked your photo.',
+        type: 'REACTION_POST' as const,
+        actorIds: ['1'],
+        recipientId: '5',
+        content: 'liked your photo.',
         createdAt: '5m ago',
         isRead: false,
     },
     {
         id: 'n2',
-        type: 'comment',
-        user: mockUsers[1],
-        post: mockPosts[2],
-        text: 'commented: "Amazing work!"',
+        type: 'COMMENT_POST' as const,
+        actorIds: ['2'],
+        recipientId: '5',
+        content: 'commented: "Amazing work!"',
         createdAt: '15m ago',
         isRead: false,
     },
     {
         id: 'n3',
-        type: 'follow',
-        user: mockUsers[2],
-        text: 'started following you.',
+        type: 'FRIEND_REQUEST' as const,
+        actorIds: ['3'],
+        recipientId: '5',
+        content: 'started following you.',
         createdAt: '1h ago',
         isRead: true,
     },
     {
         id: 'n4',
-        type: 'like',
-        user: mockUsers[3],
-        post: mockPosts[2],
-        text: 'liked your photo.',
+        type: 'REACTION_POST' as const,
+        actorIds: ['4'],
+        recipientId: '5',
+        content: 'liked your photo.',
         createdAt: '2h ago',
         isRead: true,
     },
     {
         id: 'n5',
-        type: 'mention',
-        user: mockUsers[0],
-        post: mockPosts[1],
-        text: 'mentioned you in a comment.',
+        type: 'COMMENT_MENTION' as const,
+        actorIds: ['1'],
+        recipientId: '5',
+        content: 'mentioned you in a comment.',
         createdAt: '5h ago',
         isRead: true,
     },
 ];
 
 // Suggestions (users to follow)
-export const suggestedUsers: User[] = [
+export const suggestedUsers = [
     {
-        id: '6',
+        id: 6,
         username: 'emma_watson',
         fullName: 'Emma Watson',
-        avatar: 'https://i.pravatar.cc/150?img=6',
+        avatarUrl: 'https://i.pravatar.cc/150?img=6',
         bio: 'Actress & Activist',
         isVerified: true,
         followersCount: 50000,
@@ -352,20 +350,20 @@ export const suggestedUsers: User[] = [
         postsCount: 320,
     },
     {
-        id: '7',
+        id: 7,
         username: 'david_miller',
         fullName: 'David Miller',
-        avatar: 'https://i.pravatar.cc/150?img=7',
+        avatarUrl: 'https://i.pravatar.cc/150?img=7',
         bio: 'Food blogger 🍕',
         followersCount: 3456,
         followingCount: 567,
         postsCount: 234,
     },
     {
-        id: '8',
+        id: 8,
         username: 'lisa_brown',
         fullName: 'Lisa Brown',
-        avatar: 'https://i.pravatar.cc/150?img=8',
+        avatarUrl: 'https://i.pravatar.cc/150?img=8',
         bio: 'Yoga instructor 🧘‍♀️',
         followersCount: 2345,
         followingCount: 345,

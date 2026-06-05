@@ -7,49 +7,84 @@ type Props = {
     user: User;
     stats: ProfileStats;
     onEditProfile: () => void;
-    onOpenMenu: () => void;
 };
 
 export default function ProfileHeader({
     user,
     stats,
     onEditProfile,
-    onOpenMenu,
 }: Props) {
     return (
         <View style={styles.container}>
-            <View style={styles.rowTop}>
-                <UserAvatar uri={user.avatar} name={user.username} size={82} />
-                <View style={styles.statsRow}>
-                    <Stat label="Posts" value={stats.posts} />
-                    <Stat label="Followers" value={stats.followers} />
-                    <Stat label="Following" value={stats.following} />
+            {/* Avatar + Info Section (Horizontal Layout) */}
+            <View style={styles.topSection}>
+                {/* Avatar */}
+                <View style={styles.avatarColumn}>
+                    <UserAvatar uri={user.avatar} name={user.username} size={80} />
+                </View>
+
+                {/* Info Column */}
+                <View style={styles.infoColumn}>
+                    {/* Name & Username */}
+                    <Text style={styles.fullName} numberOfLines={1}>
+                        {user.fullName || user.username}
+                    </Text>
+                    <Text style={styles.username} numberOfLines={1}>
+                        @{user.username}
+                    </Text>
+
+                    {/* Bio */}
+                    {user.bio ? (
+                        <Text style={styles.bio} numberOfLines={2}>
+                            {user.bio}
+                        </Text>
+                    ) : null}
+
+                    {/* Gender & Birthday */}
+                    <View style={styles.metaRow}>
+                        {user.gender && (
+                            <Text style={styles.metaText}>
+                                👥 {user.gender === "MALE" ? "Nam" : user.gender === "FEMALE" ? "Nữ" : "Ẩn"}
+                            </Text>
+                        )}
+                        {user.birthday && (
+                            <Text style={styles.metaText}>
+                                📅 {user.birthday}
+                            </Text>
+                        )}
+                    </View>
                 </View>
             </View>
 
-            <Text style={styles.fullName}>{user.fullName}</Text>
-            <Text style={styles.bio}>{user.bio}</Text>
-            {user.website ? (
-                <Text style={styles.website}>{user.website}</Text>
-            ) : null}
-
-            <View style={styles.actions}>
-                <Pressable style={styles.editButton} onPress={onEditProfile}>
-                    <Text style={styles.editButtonText}>Edit profile</Text>
-                </Pressable>
-                <Pressable style={styles.menuButton} onPress={onOpenMenu}>
-                    <Text style={styles.menuButtonText}>Menu</Text>
-                </Pressable>
+            {/* Stats Row */}
+            <View style={styles.statsRow}>
+                <View style={styles.statItem}>
+                    <Text style={styles.statValue}>{stats.posts}</Text>
+                    <Text style={styles.statLabel}>Posts</Text>
+                </View>
+                <View style={styles.divider} />
+                <View style={styles.statItem}>
+                    <Text style={styles.statValue}>{stats.followers}</Text>
+                    <Text style={styles.statLabel}>Followers</Text>
+                </View>
+                <View style={styles.divider} />
+                <View style={styles.statItem}>
+                    <Text style={styles.statValue}>{stats.following}</Text>
+                    <Text style={styles.statLabel}>Following</Text>
+                </View>
             </View>
-        </View>
-    );
-}
 
-function Stat({ label, value }: { label: string; value: number }) {
-    return (
-        <View style={styles.statItem}>
-            <Text style={styles.statValue}>{value}</Text>
-            <Text style={styles.statLabel}>{label}</Text>
+            {/* Edit Button */}
+            <Pressable style={styles.editButton} onPress={onEditProfile}>
+                <Text style={styles.editButtonText}>Edit Profile</Text>
+            </Pressable>
+
+            {/* Website */}
+            {user.website ? (
+                <Text style={styles.website} numberOfLines={1}>
+                    🔗 {user.website}
+                </Text>
+            ) : null}
         </View>
     );
 }
@@ -59,68 +94,95 @@ const styles = StyleSheet.create({
         backgroundColor: colors.white,
         paddingHorizontal: spacing.lg,
         paddingVertical: spacing.lg,
+        borderBottomWidth: 1,
+        borderBottomColor: colors.border,
     },
-    rowTop: {
+    topSection: {
         flexDirection: "row",
+        gap: spacing.lg,
+        marginBottom: spacing.lg,
+    },
+    avatarColumn: {
+        alignItems: "center",
+    },
+    infoColumn: {
+        flex: 1,
+        justifyContent: "center",
+    },
+    fullName: {
+        fontSize: 16,
+        fontWeight: "700",
+        color: colors.text,
+        marginBottom: spacing.xs,
+    },
+    username: {
+        fontSize: 14,
+        color: colors.textMuted,
+        fontWeight: "500",
+        marginBottom: spacing.xs,
+    },
+    bio: {
+        fontSize: 13,
+        color: colors.text,
+        lineHeight: 18,
+        marginBottom: spacing.xs,
+    },
+    metaRow: {
+        flexDirection: "row",
+        gap: spacing.md,
+        marginTop: spacing.xs,
+    },
+    metaText: {
+        fontSize: 12,
+        color: colors.textMuted,
+        fontWeight: "500",
     },
     statsRow: {
-        flex: 1,
         flexDirection: "row",
         justifyContent: "space-around",
         alignItems: "center",
+        paddingVertical: spacing.md,
+        marginBottom: spacing.md,
+        borderTopWidth: 1,
+        borderTopColor: colors.border,
     },
     statItem: {
         alignItems: "center",
+        flex: 1,
     },
     statValue: {
         fontSize: 18,
         fontWeight: "700",
         color: colors.text,
+        marginBottom: spacing.xs,
     },
     statLabel: {
-        fontSize: 13,
-        color: colors.text,
+        fontSize: 12,
+        color: colors.textMuted,
+        fontWeight: "500",
     },
-    fullName: {
-        marginTop: spacing.md,
-        color: colors.text,
-        fontWeight: "700",
+    divider: {
+        width: 1,
+        height: 30,
+        backgroundColor: colors.border,
     },
-    bio: {
-        marginTop: spacing.xs,
+    editButton: {
+        borderWidth: 1,
+        borderColor: colors.border,
+        borderRadius: 6,
+        paddingVertical: spacing.sm,
+        alignItems: "center",
+        justifyContent: "center",
+        marginBottom: spacing.sm,
+    },
+    editButtonText: {
+        fontSize: 14,
+        fontWeight: "600",
         color: colors.text,
     },
     website: {
-        marginTop: spacing.xs,
-        color: colors.primaryDark,
-    },
-    actions: {
-        marginTop: spacing.md,
-        flexDirection: "row",
-        gap: spacing.sm,
-    },
-    editButton: {
-        flex: 1,
-        borderRadius: 8,
-        borderWidth: 1,
-        borderColor: colors.border,
-        alignItems: "center",
-        paddingVertical: spacing.sm,
-    },
-    menuButton: {
-        width: 90,
-        borderRadius: 8,
-        borderWidth: 1,
-        borderColor: colors.border,
-        alignItems: "center",
-        justifyContent: "center",
-    },
-    editButtonText: {
-        color: colors.text,
-        fontWeight: "600",
-    },
-    menuButtonText: {
-        color: colors.text,
-        fontWeight: "600",
+        fontSize: 12,
+        color: colors.primary,
+        fontWeight: "500",
     },
 });

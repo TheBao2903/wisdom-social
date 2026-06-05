@@ -1,9 +1,10 @@
 import axiosClient from "../api/axiosClient";
-import type { User } from '../types';
+
 
 export interface UserRequestCreatePage {
     name: string;
-    username: string;
+    // Username được backend tự gán = username người tạo (cho phép trùng), không cần gửi.
+    username?: string;
     category: string;
     description?: string;
     avatarUrl?: string;
@@ -81,15 +82,34 @@ export interface Page {
     status: string;
     createdAt: string;
     updatedAt: string;
+    // Per-current-user interaction state, embedded by the backend on the
+    // discover list (/page/all). Lets the list render like/follow without
+    // a separate interaction-status call per page.
+    isLiked?: boolean;
+    isFollowing?: boolean;
+    likeCount?: number;
+    followCount?: number;
 }
 
 export interface PageMember {
     id: number;
-    pageId: number;
-    userId: number;
-    pageRole: string;
-    memberStatus: string;
-    joinDate: string;
+    page?: {
+        id: number;
+        name?: string;
+        username?: string;
+    };
+    user: {
+        id: number;
+        name?: string;
+        fullName?: string;
+        username?: string;
+        avatarUrl?: string;
+        phone?: string;
+        email?: string;
+    };
+    role: string;      // ADMIN | MODERATOR | USER
+    status: string;    // PENDING | ACTIVE | REMOVED | REJECTED | BLOCKED
+    joinedAt?: string;
 }
 
 export interface PagePost {
@@ -176,6 +196,7 @@ export const pageService = {
 
     // Get upload URL for avatar (backend returns string directly, not wrapped)
     async getUploadAvatarUrl(type: string, pageId: number, extension: string): Promise<string> {
+        if (!pageId || !Number.isFinite(pageId) || pageId <= 0) throw new Error("Invalid pageId for avatar upload");
         const response = await axiosClient.get(`page/update/upload-avatar`, {
             params: { type, id: pageId, extension }
         });
@@ -184,6 +205,7 @@ export const pageService = {
 
     // Get upload URL for cover (backend returns string directly, not wrapped)
     async getUploadCoverUrl(type: string, pageId: number, extension: string): Promise<string> {
+        if (!pageId || !Number.isFinite(pageId) || pageId <= 0) throw new Error("Invalid pageId for cover upload");
         const response = await axiosClient.get(`page/update/upload-cover`, {
             params: { type, id: pageId, extension }
         });
@@ -262,9 +284,15 @@ export const pageService = {
         return response.data.data;
     },
 
-    // Get posts waiting for approval
+    // Get posts waiting for approval (admin/owner only)
     async getPostsWaitingForApproval(pageId: number): Promise<any[]> {
         const response = await axiosClient.get(`page/post/waiting-approve/${pageId}`);
+        return response.data.data;
+    },
+
+    // Get my own pending posts in a page (for regular members)
+    async getMyPendingPosts(pageId: number): Promise<any[]> {
+        const response = await axiosClient.get(`page/post/my-pending/${pageId}`);
         return response.data.data;
     },
 

@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { ArrowLeft, Loader2, Upload, X, Globe, Lock } from "lucide-react";
 import pageService from "../services/pageService";
 import { useCurrentUser } from "../hooks/useCurrentUser";
+import ConfirmModal from "../components/common/ConfirmModal";
 
 const CATEGORIES = [
     "Kinh doanh",
@@ -23,6 +24,7 @@ export default function CreatePage() {
     const navigate = useNavigate();
     const currentUser = useCurrentUser();
     const [loading, setLoading] = useState(false);
+    const [notification, setNotification] = useState<{ title: string; message: string; variant?: "warning" | "default" } | null>(null);
     const [avatarPreview, setAvatarPreview] = useState<string | null>(null);
     const [avatarFile, setAvatarFile] = useState<File | null>(null);
 
@@ -92,11 +94,8 @@ export default function CreatePage() {
         if (!formData.name.trim()) {
             newErrors.name = "Tên page là bắt buộc";
         }
-        if (!formData.username.trim()) {
-            newErrors.username = "Username là bắt buộc";
-        } else if (!/^[a-zA-Z0-9_]+$/.test(formData.username)) {
-            newErrors.username = "Username chỉ chứa chữ cái, số và dấu gạch dưới";
-        }
+        // Username được tự gán = username người tạo ở backend (cho phép trùng),
+        // nên không cần nhập/validate ở form.
         if (!formData.category) {
             newErrors.category = "Vui lòng chọn danh mục";
         }
@@ -110,7 +109,7 @@ export default function CreatePage() {
         
         if (!validate()) return;
         if (!currentUser?.id) {
-            alert("Vui lòng đăng nhập để tạo page");
+            setNotification({ title: "Thông báo", message: "Vui lòng đăng nhập để tạo page", variant: "warning" });
             return;
         }
 
@@ -158,7 +157,6 @@ export default function CreatePage() {
             // Create page
             await pageService.createPage({
                 name: formData.name,
-                username: formData.username,
                 category: formData.category,
                 description: formData.description || undefined,
                 phone: formData.phone || undefined,
@@ -170,11 +168,10 @@ export default function CreatePage() {
                 status: formData.status,
             });
 
-            alert("Tạo page thành công!");
             navigate("/pages");
         } catch (error: any) {
             console.error("Error creating page:", error);
-            alert(error.response?.data?.message || "Không thể tạo page. Vui lòng thử lại.");
+            setNotification({ title: "Lỗi", message: error.response?.data?.message || "Không thể tạo page. Vui lòng thử lại.", variant: "warning" });
         } finally {
             setLoading(false);
         }
@@ -182,6 +179,15 @@ export default function CreatePage() {
 
     return (
         <div className="max-w-2xl mx-auto p-4 md:p-6">
+            {notification && (
+                <ConfirmModal
+                    open
+                    title={notification.title}
+                    message={notification.message}
+                    variant={notification.variant ?? "warning"}
+                    onConfirm={() => setNotification(null)}
+                />
+            )}
             {/* Header */}
             <div className="flex items-center gap-4 mb-6">
                 <button
@@ -281,27 +287,6 @@ export default function CreatePage() {
                         }`}
                     />
                     {errors.name && <p className="text-red-500 text-sm mt-1">{errors.name}</p>}
-                </div>
-
-                {/* Username */}
-                <div>
-                    <label className="block text-sm font-medium dark:text-white mb-2">
-                        Username <span className="text-red-500">*</span>
-                    </label>
-                    <div className="flex items-center">
-                        <span className="px-3 py-3 bg-gray-200 dark:bg-[#363636] text-gray-500 rounded-l-lg">@</span>
-                        <input
-                            type="text"
-                            name="username"
-                            value={formData.username}
-                            onChange={handleChange}
-                            placeholder="username"
-                            className={`flex-1 px-4 py-3 bg-gray-100 dark:bg-[#262626] rounded-r-lg focus:ring-2 focus:ring-blue-500 dark:text-white ${
-                                errors.username ? "ring-2 ring-red-500" : ""
-                            }`}
-                        />
-                    </div>
-                    {errors.username && <p className="text-red-500 text-sm mt-1">{errors.username}</p>}
                 </div>
 
                 {/* Category */}

@@ -8,7 +8,7 @@ import {
   validateUsername,
   validateFullName,
   validateBirthday,
-  validateGender
+  validateGender,
 } from "../utils/validation";
 import axios from "axios";
 
@@ -19,6 +19,14 @@ interface FormErrors {
   gender: string;
 }
 
+type ProfilePrivacy = "PUBLIC" | "FRIENDS" | "ONLY_ME";
+
+const PRIVACY_OPTIONS: { value: ProfilePrivacy; label: string; desc: string }[] = [
+  { value: "PUBLIC",  label: "Công khai",    desc: "Tất cả mọi người" },
+  { value: "FRIENDS", label: "Bạn bè",       desc: "Chỉ bạn bè" },
+  { value: "ONLY_ME", label: "Chỉ mình tôi", desc: "Riêng tư hoàn toàn" },
+];
+
 interface FormState {
   name: string;
   username: string;
@@ -26,6 +34,7 @@ interface FormState {
   birthday: string;
   gender: "MALE" | "FEMALE" | "OTHER";
   avatarUrl: string;
+  privacyProfile: ProfilePrivacy;
 }
 
 export default function EditProfile() {
@@ -40,6 +49,7 @@ export default function EditProfile() {
     birthday: "",
     gender: "OTHER",
     avatarUrl: "",
+    privacyProfile: "PUBLIC",
   });
 
   const [formErrors, setFormErrors] = useState<FormErrors>({
@@ -53,20 +63,35 @@ export default function EditProfile() {
   const [uploading, setUploading] = useState(false);
   const [previewAvatar, setPreviewAvatar] = useState("");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [message, setMessage] = useState<{ type: 'success' | 'error' | 'loading'; text: string } | null>(null);
+  const [message, setMessage] = useState<{
+    type: "success" | "error" | "loading";
+    text: string;
+  } | null>(null);
 
   useEffect(() => {
-    if (currentUser) {
+    if (!currentUser) return;
+    userService.getProfileById(currentUser.id).then((profile) => {
       setFormData({
         name: currentUser.fullName ?? currentUser.name ?? "",
         username: currentUser.username ?? "",
         bio: currentUser.bio ?? "",
         birthday: currentUser.birthday ?? "",
-        gender: (currentUser.gender?.toUpperCase() as "MALE" | "FEMALE" | "OTHER"),
+        gender: currentUser.gender?.toUpperCase() as "MALE" | "FEMALE" | "OTHER",
         avatarUrl: currentUser.avatarUrl ?? "",
+        privacyProfile: (profile?.privacyProfile as ProfilePrivacy) ?? "PUBLIC",
       });
-      setPreviewAvatar(currentUser.avatarUrl ?? "");
-    }
+    }).catch(() => {
+      setFormData({
+        name: currentUser.fullName ?? currentUser.name ?? "",
+        username: currentUser.username ?? "",
+        bio: currentUser.bio ?? "",
+        birthday: currentUser.birthday ?? "",
+        gender: currentUser.gender?.toUpperCase() as "MALE" | "FEMALE" | "OTHER",
+        avatarUrl: currentUser.avatarUrl ?? "",
+        privacyProfile: "PUBLIC",
+      });
+    });
+    setPreviewAvatar(currentUser.avatarUrl ?? "");
   }, [currentUser]);
 
   const validateField = (field: keyof FormState, value: string) => {
@@ -88,7 +113,7 @@ export default function EditProfile() {
       error = validation.error || "";
     }
 
-    setFormErrors(prev => ({ ...prev, [field]: error }));
+    setFormErrors((prev) => ({ ...prev, [field]: error }));
     return error === "";
   };
 
@@ -105,24 +130,27 @@ export default function EditProfile() {
   const validateUsernameAsync = async (value: string) => {
     const basicValidation = validateUsername(value);
     if (!basicValidation.isValid) {
-      setFormErrors(prev => ({ ...prev, username: basicValidation.error || "" }));
+      setFormErrors((prev) => ({
+        ...prev,
+        username: basicValidation.error || "",
+      }));
       return false;
     }
 
     // Skip async check if username didn't change
     if (value === currentUser?.username) {
-      setFormErrors(prev => ({ ...prev, username: "" }));
+      setFormErrors((prev) => ({ ...prev, username: "" }));
       return true;
     }
 
     const exists = await checkUsernameExists(value);
     if (exists) {
       const dupError = "Tên người dùng này đã tồn tại";
-      setFormErrors(prev => ({ ...prev, username: dupError }));
+      setFormErrors((prev) => ({ ...prev, username: dupError }));
       return false;
     }
 
-    setFormErrors(prev => ({ ...prev, username: "" }));
+    setFormErrors((prev) => ({ ...prev, username: "" }));
     return true;
   };
 
@@ -132,12 +160,18 @@ export default function EditProfile() {
 
     const validTypes = ["image/jpeg", "image/jpg", "image/png", "image/webp"];
     if (!validTypes.includes(file.type)) {
-      setMessage({ type: 'error', text: "Vui lòng chọn file ảnh (JPG, PNG, WEBP)" });
+      setMessage({
+        type: "error",
+        text: "Vui lòng chọn file ảnh (JPG, PNG, WEBP)",
+      });
       return;
     }
 
     if (file.size > 5 * 1024 * 1024) {
-      setMessage({ type: 'error', text: "Kích thước file không được vượt quá 5MB" });
+      setMessage({
+        type: "error",
+        text: "Kích thước file không được vượt quá 5MB",
+      });
       return;
     }
 
@@ -155,7 +189,10 @@ export default function EditProfile() {
     setUploading(true);
     try {
       const extension = selectedFile.name.split(".").pop() || "jpg";
-      const uploadUrl = await userService.updateUploadAvatarUrl("users", extension);
+      const uploadUrl = await userService.updateUploadAvatarUrl(
+        "users",
+        extension
+      );
 
       await axios.put(uploadUrl, selectedFile, {
         headers: { "Content-Type": selectedFile.type },
@@ -178,11 +215,13 @@ export default function EditProfile() {
 
     // Validate all fields (sync validations are instant)
     const nameValid = validateField("name", formData.name);
-    const birthdayValid = formData.birthday ? validateField("birthday", formData.birthday) : true;
+    const birthdayValid = formData.birthday
+      ? validateField("birthday", formData.birthday)
+      : true;
     const genderValid = validateField("gender", formData.gender);
 
     if (!nameValid || !birthdayValid || !genderValid) {
-      setMessage({ type: 'error', text: "Vui lòng kiểm tra thông tin form" });
+      setMessage({ type: "error", text: "Vui lòng kiểm tra thông tin form" });
       return;
     }
 
@@ -191,14 +230,14 @@ export default function EditProfile() {
     if (usernameChanged) {
       const usernameValid = await validateUsernameAsync(formData.username);
       if (!usernameValid) {
-        setMessage({ type: 'error', text: "Tên người dùng không hợp lệ" });
+        setMessage({ type: "error", text: "Tên người dùng không hợp lệ" });
         return;
       }
     }
 
     // Disable button immediately
     setLoading(true);
-    setMessage({ type: 'loading', text: "Đang lưu thông tin..." });
+    setMessage({ type: "loading", text: "Đang lưu thông tin..." });
 
     try {
       const updateData = {
@@ -207,15 +246,18 @@ export default function EditProfile() {
         bio: formData.bio,
         birthday: formData.birthday,
         gender: formData.gender,
+        privacyProfile: formData.privacyProfile,
       };
 
       // Parallelize: upload avatar and update profile simultaneously
-      const uploadPromise = selectedFile ? handleUploadAvatar() : Promise.resolve();
+      const uploadPromise = selectedFile
+        ? handleUploadAvatar()
+        : Promise.resolve();
       const updatePromise = userService.updateUser(currentUser.id, updateData);
 
       await Promise.all([uploadPromise, updatePromise]);
 
-      setMessage({ type: 'success', text: "Cập nhật hồ sơ thành công!" });
+      setMessage({ type: "success", text: "Cập nhật hồ sơ thành công!" });
 
       // Optimistic navigation - don't wait for getCurrentUser
       setTimeout(() => {
@@ -223,7 +265,10 @@ export default function EditProfile() {
       }, 800);
     } catch (error) {
       console.error("Error updating profile:", error);
-      setMessage({ type: 'error', text: "Không thể cập nhật hồ sơ. Vui lòng thử lại." });
+      setMessage({
+        type: "error",
+        text: "Không thể cập nhật hồ sơ. Vui lòng thử lại.",
+      });
       setLoading(false);
     }
   };
@@ -251,19 +296,31 @@ export default function EditProfile() {
 
       {/* Message */}
       {message && (
-        <div className={`border-b ${
-          message.type === 'error' ? 'border-red-500 bg-red-50 dark:bg-red-900/20' :
-          message.type === 'success' ? 'border-green-500 bg-green-50 dark:bg-green-900/20' :
-          'border-blue-500 bg-blue-50 dark:bg-blue-900/20'
-        }`}>
+        <div
+          className={`border-b ${
+            message.type === "error"
+              ? "border-red-500 bg-red-50 dark:bg-red-900/20"
+              : message.type === "success"
+              ? "border-green-500 bg-green-50 dark:bg-green-900/20"
+              : "border-blue-500 bg-blue-50 dark:bg-blue-900/20"
+          }`}
+        >
           <div className="max-w-3xl mx-auto px-4 py-3 flex items-center gap-2">
-            {message.type === 'loading' && <Loader2 className="animate-spin" size={18} />}
-            {message.type === 'error' && <AlertCircle size={18} className="text-red-500" />}
-            <span className={
-              message.type === 'error' ? 'text-red-800 dark:text-red-200' :
-              message.type === 'success' ? 'text-green-800 dark:text-green-200' :
-              'text-blue-800 dark:text-blue-200'
-            }>
+            {message.type === "loading" && (
+              <Loader2 className="animate-spin" size={18} />
+            )}
+            {message.type === "error" && (
+              <AlertCircle size={18} className="text-red-500" />
+            )}
+            <span
+              className={
+                message.type === "error"
+                  ? "text-red-800 dark:text-red-200"
+                  : message.type === "success"
+                  ? "text-green-800 dark:text-green-200"
+                  : "text-blue-800 dark:text-blue-200"
+              }
+            >
               {message.text}
             </span>
           </div>
@@ -277,7 +334,11 @@ export default function EditProfile() {
           <div className="flex items-center gap-6 bg-gray-50 dark:bg-[#121212] rounded-2xl p-6">
             <div className="flex-shrink-0 relative">
               <img
-                src={previewAvatar.startsWith('data:') ? previewAvatar : buildS3Url(previewAvatar)}
+                src={
+                  previewAvatar.startsWith("data:")
+                    ? previewAvatar
+                    : buildS3Url(previewAvatar) ?? undefined
+                }
                 alt="avatar"
                 className="w-20 h-20 rounded-full object-cover"
               />
@@ -317,7 +378,6 @@ export default function EditProfile() {
                 <Upload size={16} />
                 Chọn ảnh
               </button>
-              
             </div>
           </div>
 
@@ -330,13 +390,13 @@ export default function EditProfile() {
               type="text"
               value={formData.name}
               onChange={(e) => {
-                setFormData(prev => ({ ...prev, name: e.target.value }));
+                setFormData((prev) => ({ ...prev, name: e.target.value }));
                 validateField("name", e.target.value);
               }}
               className={`w-full px-4 py-3 border rounded-lg bg-white dark:bg-[#121212] dark:text-white focus:outline-none focus:ring-2 ${
                 formErrors.name
-                  ? 'border-red-500 focus:ring-red-500'
-                  : 'border-gray-300 dark:border-[#262626] focus:ring-blue-500'
+                  ? "border-red-500 focus:ring-red-500"
+                  : "border-gray-300 dark:border-[#262626] focus:ring-blue-500"
               }`}
               placeholder="Nhập họ tên"
               autoComplete="off"
@@ -355,13 +415,13 @@ export default function EditProfile() {
               type="text"
               value={formData.username}
               onChange={(e) => {
-                setFormData(prev => ({ ...prev, username: e.target.value }));
+                setFormData((prev) => ({ ...prev, username: e.target.value }));
                 validateField("username", e.target.value);
               }}
               className={`w-full px-4 py-3 border rounded-lg bg-white dark:bg-[#121212] dark:text-white focus:outline-none focus:ring-2 ${
                 formErrors.username
-                  ? 'border-red-500 focus:ring-red-500'
-                  : 'border-gray-300 dark:border-[#262626] focus:ring-blue-500'
+                  ? "border-red-500 focus:ring-red-500"
+                  : "border-gray-300 dark:border-[#262626] focus:ring-blue-500"
               }`}
               placeholder="@username"
               autoComplete="off"
@@ -379,7 +439,7 @@ export default function EditProfile() {
             <textarea
               value={formData.bio}
               onChange={(e) => {
-                setFormData(prev => ({ ...prev, bio: e.target.value }));
+                setFormData((prev) => ({ ...prev, bio: e.target.value }));
               }}
               rows={3}
               className="w-full px-4 py-3 border border-gray-300 dark:border-[#262626] rounded-lg bg-white dark:bg-[#121212] dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
@@ -397,13 +457,13 @@ export default function EditProfile() {
               type="text"
               value={formData.birthday}
               onChange={(e) => {
-                setFormData(prev => ({ ...prev, birthday: e.target.value }));
+                setFormData((prev) => ({ ...prev, birthday: e.target.value }));
                 if (e.target.value) validateField("birthday", e.target.value);
               }}
               className={`w-full px-4 py-3 border rounded-lg bg-white dark:bg-[#121212] dark:text-white focus:outline-none focus:ring-2 ${
                 formErrors.birthday
-                  ? 'border-red-500 focus:ring-red-500'
-                  : 'border-gray-300 dark:border-[#262626] focus:ring-blue-500'
+                  ? "border-red-500 focus:ring-red-500"
+                  : "border-gray-300 dark:border-[#262626] focus:ring-blue-500"
               }`}
               placeholder="DD/MM/YYYY"
               autoComplete="off"
@@ -419,27 +479,58 @@ export default function EditProfile() {
               Giới tính
             </label>
             <div className="flex gap-3">
-              {(['MALE', 'FEMALE', 'OTHER'] as const).map(option => (
+              {(["MALE", "FEMALE", "OTHER"] as const).map((option) => (
                 <button
                   key={option}
                   type="button"
                   onClick={() => {
-                    setFormData(prev => ({ ...prev, gender: option }));
+                    setFormData((prev) => ({ ...prev, gender: option }));
                     validateField("gender", option);
                   }}
                   className={`flex-1 px-4 py-3 border-2 rounded-lg font-semibold transition-colors ${
                     formData.gender === option
-                      ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-300'
-                      : 'border-gray-300 dark:border-[#262626] bg-white dark:bg-[#121212] text-gray-700 dark:text-gray-300 hover:border-gray-400'
+                      ? "border-blue-500 bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-300"
+                      : "border-gray-300 dark:border-[#262626] bg-white dark:bg-[#121212] text-gray-700 dark:text-gray-300 hover:border-gray-400"
                   }`}
                 >
-                  {option === 'MALE' ? 'Nam' : option === 'FEMALE' ? 'Nữ' : 'Khác'}
+                  {option === "MALE"
+                    ? "Nam"
+                    : option === "FEMALE"
+                    ? "Nữ"
+                    : "Khác"}
                 </button>
               ))}
             </div>
             {formErrors.gender && (
               <p className="text-red-500 text-sm mt-1">{formErrors.gender}</p>
             )}
+          </div>
+
+          {/* Profile Privacy */}
+          <div>
+            <label className="block text-sm font-semibold mb-1 dark:text-white">
+              Chế độ hồ sơ
+            </label>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
+              Chọn ai có thể xem thông tin hồ sơ của bạn
+            </p>
+            <div className="flex gap-3">
+              {PRIVACY_OPTIONS.map((opt) => (
+                <button
+                  key={opt.value}
+                  type="button"
+                  onClick={() => setFormData((prev) => ({ ...prev, privacyProfile: opt.value }))}
+                  className={`flex-1 px-3 py-3 border-2 rounded-lg font-semibold transition-colors text-center ${
+                    formData.privacyProfile === opt.value
+                      ? "border-blue-500 bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-300"
+                      : "border-gray-300 dark:border-[#262626] bg-white dark:bg-[#121212] text-gray-700 dark:text-gray-300 hover:border-gray-400"
+                  }`}
+                >
+                  <span className="block text-sm">{opt.label}</span>
+                  <span className="block text-xs font-normal opacity-70 mt-0.5">{opt.desc}</span>
+                </button>
+              ))}
+            </div>
           </div>
 
           {/* Submit Button */}

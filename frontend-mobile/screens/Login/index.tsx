@@ -1,19 +1,65 @@
-import React, { useMemo, useState } from "react";
-import { Pressable, SafeAreaView, StyleSheet, Text, View } from "react-native";
+import React, { useCallback, useEffect, useRef, useState } from "react";
+import { Alert, Pressable, SafeAreaView, StyleSheet, Text, View } from "react-native";
 import { useRouter } from "expo-router";
 import { colors, spacing } from "@/constants";
 import { useAppContext } from "@/context/AppContext";
 import { validatePhone, validateRequired } from "@/utils/validators";
 import { CustomButton, CustomInput } from "@/components";
+import { cancelAccountDeletion } from "@/services/securityService";
 
 export default function LoginScreen() {
     const router = useRouter();
     const { login, loadingAuth } = useAppContext();
-    const [phone, setPhone] = useState("0398724346");
-    const [password, setPassword] = useState("Xen123123!");
+    const [phone, setPhone] = useState("");
+    const [password, setPassword] = useState("");
     const [error, setError] = useState("");
+    const [lockCountdown, setLockCountdown] = useState(0);
+    const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-    const disabled = useMemo(() => !phone || !password, [phone, password]);
+    useEffect(() => {
+        return () => {
+            if (timerRef.current) clearInterval(timerRef.current);
+        };
+    }, []);
+
+    const startCountdown = useCallback((seconds: number) => {
+        if (timerRef.current) clearInterval(timerRef.current);
+        setLockCountdown(seconds);
+        timerRef.current = setInterval(() => {
+            setLockCountdown((prev) => {
+                if (prev <= 1) {
+                    if (timerRef.current) clearInterval(timerRef.current);
+                    timerRef.current = null;
+                    return 0;
+                }
+                return prev - 1;
+            });
+        }, 1000);
+    }, []);
+
+    const formatCountdown = (seconds: number) => {
+        const m = Math.floor(seconds / 60);
+        const s = seconds % 60;
+        return `${m}:${s.toString().padStart(2, "0")}`;
+    };
+
+    const showDeletionWarning = (remainingDays?: number) => {
+        Alert.alert(
+            "Tài khoản đang chờ xóa",
+            `Tài khoản của bạn sẽ bị xóa vĩnh viễn sau ${remainingDays ?? 30} ngày. Bạn có muốn hủy yêu cầu xóa?`,
+            [
+                { text: "Tiếp tục", style: "cancel", onPress: () => router.replace("/(tabs)") },
+                {
+                    text: "Hủy xóa tài khoản",
+                    style: "destructive",
+                    onPress: async () => {
+                        await cancelAccountDeletion();
+                        router.replace("/(tabs)");
+                    },
+                },
+            ],
+        );
+    };
 
     const onSubmit = async () => {
         setError("");
@@ -30,13 +76,24 @@ export default function LoginScreen() {
         }
 
         const result = await login(normalized, password);
+
         if (!result.success) {
             setError(result.message ?? "Đăng nhập thất bại.");
+            if (result.remainingSeconds && result.remainingSeconds > 0) {
+                startCountdown(result.remainingSeconds);
+            }
+            return;
+        }
+
+        if (result.deletionPending) {
+            showDeletionWarning(result.deletionRemainingDays);
             return;
         }
 
         router.replace("/(tabs)");
     };
+
+    const isLocked = lockCountdown > 0;
 
     return (
         <SafeAreaView style={styles.container}>
@@ -60,12 +117,17 @@ export default function LoginScreen() {
                 />
 
                 {error ? <Text style={styles.error}>{error}</Text> : null}
+                {isLocked ? (
+                    <Text style={styles.lockTimer}>
+                        Thử lại sau {formatCountdown(lockCountdown)}
+                    </Text>
+                ) : null}
 
                 <CustomButton
-                    title="Log In"
+                    title={isLocked ? `Đã khóa (${formatCountdown(lockCountdown)})` : "Log In"}
                     onPress={onSubmit}
                     loading={loadingAuth}
-                   
+                    disabled={isLocked}
                     style={styles.loginButton}
                 />
 
@@ -116,6 +178,13 @@ const styles = StyleSheet.create({
     },
     error: {
         color: colors.danger,
+        marginBottom: spacing.sm,
+    },
+    lockTimer: {
+        color: "#F59E0B",
+        fontWeight: "600",
+        fontSize: 16,
+        textAlign: "center",
         marginBottom: spacing.sm,
     },
     link: {

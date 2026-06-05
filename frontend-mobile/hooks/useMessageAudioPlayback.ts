@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
-import { Animated, Easing, Alert, Linking } from "react-native";
+import { Animated, Easing, Alert, Linking, Platform } from "react-native";
 import { Audio, AVPlaybackStatus } from "expo-av";
 import * as Haptics from "expo-haptics";
 import { AudioProgress, buildAudioWaveBars } from "@/utils/messageUtils";
@@ -9,46 +9,128 @@ export function useMessageAudioPlayback() {
     const audioIconFade = useRef(new Animated.Value(1)).current;
     const audioPressScale = useRef(new Animated.Value(1)).current;
     const audioSeekScale = useRef(new Animated.Value(1)).current;
-    const [activeSeekAudioKey, setActiveSeekAudioKey] = useState<string | null>(null);
-    const [activePressAudioKey, setActivePressAudioKey] = useState<string | null>(null);
+    const [activeSeekAudioKey, setActiveSeekAudioKey] = useState<string | null>(
+        null,
+    );
+    const [activePressAudioKey, setActivePressAudioKey] = useState<
+        string | null
+    >(null);
     const audioWaveBarsCacheRef = useRef<Record<string, number[]>>({});
 
     const [audioLoadingKey, setAudioLoadingKey] = useState<string | null>(null);
     const [playingAudioKey, setPlayingAudioKey] = useState<string | null>(null);
-    const [audioProgressMap, setAudioProgressMap] = useState<Record<string, AudioProgress>>({});
-    const [audioTrackWidthMap, setAudioTrackWidthMap] = useState<Record<string, number>>({});
+    const [audioProgressMap, setAudioProgressMap] = useState<
+        Record<string, AudioProgress>
+    >({});
+    const [audioTrackWidthMap, setAudioTrackWidthMap] = useState<
+        Record<string, number>
+    >({});
 
     const activeAudioRef = useRef<Audio.Sound | null>(null);
     const activeAudioKeyRef = useRef<string | null>(null);
     const audioSeekThrottleRef = useRef<Record<string, number>>({});
-    const audioBoundaryStateRef = useRef<Record<string, "start" | "end" | null>>({});
+    const audioBoundaryStateRef = useRef<
+        Record<string, "start" | "end" | null>
+    >({});
 
-    const handleAudioStatusUpdate = useCallback((audioKey: string, status: AVPlaybackStatus) => {
-        if (!status.isLoaded) {
-            if (activeAudioKeyRef.current === audioKey) {
+    const isLikelyUnsupportedAudioFormat = useCallback(
+        (audioUrl: string, mimeType?: string) => {
+            const normalizedMime = mimeType?.toLowerCase() ?? "";
+            const normalizedUrl = audioUrl.toLowerCase();
+
+            const isWebmFamily =
+                normalizedMime.includes("webm") ||
+                normalizedMime.includes("opus") ||
+                normalizedUrl.includes(".webm") ||
+                normalizedUrl.includes(".opus") ||
+                normalizedUrl.includes(".weba");
+            const isOggFamily =
+                normalizedMime.includes("ogg") ||
+                normalizedUrl.includes(".ogg");
+
+            if (Platform.OS === "ios") {
+                return isWebmFamily || isOggFamily;
+            }
+
+            return false;
+        },
+        [],
+    );
+
+    const promptExternalAudioPlayback = useCallback((audioUrl: string) => {
+        Alert.alert(
+            "Thong bao",
+            "Khong the phat am thanh trong app luc nay. Ban co muon mo trinh duyet de nghe khong?",
+            [
+                { text: "Huy", style: "cancel" },
+                {
+                    text: "Mo",
+                    onPress: () => {
+                        void Linking.openURL(audioUrl);
+                    },
+                },
+            ],
+        );
+    }, []);
+
+    const ensurePlaybackAudioMode = useCallback(async () => {
+        await Audio.setAudioModeAsync({
+            allowsRecordingIOS: false,
+            playsInSilentModeIOS: true,
+            shouldDuckAndroid: true,
+            playThroughEarpieceAndroid: false,
+            staysActiveInBackground: false,
+        });
+    }, []);
+
+    const handleAudioStatusUpdate = useCallback(
+        (audioKey: string, status: AVPlaybackStatus) => {
+            if (!status.isLoaded) {
+                if (activeAudioKeyRef.current === audioKey) {
+                    setPlayingAudioKey(null);
+                }
+                return;
+            }
+
+            if (status.didJustFinish) {
+                const durationMillis = status.durationMillis ?? 0;
+
+                setAudioProgressMap((prev) => ({
+                    ...prev,
+                    [audioKey]: {
+                        positionMillis: 0,
+                        durationMillis,
+                    },
+                }));
+                setPlayingAudioKey(null);
+
+                if (
+                    activeAudioKeyRef.current === audioKey &&
+                    activeAudioRef.current
+                ) {
+                    void activeAudioRef.current
+                        .setPositionAsync(0)
+                        .catch(() => undefined);
+                }
+                return;
+            }
+
+            setAudioProgressMap((prev) => ({
+                ...prev,
+                [audioKey]: {
+                    positionMillis: status.positionMillis ?? 0,
+                    durationMillis: status.durationMillis ?? 0,
+                },
+            }));
+
+            if (status.isPlaying) {
+                setPlayingAudioKey(audioKey);
+            } else if (activeAudioKeyRef.current === audioKey) {
                 setPlayingAudioKey(null);
             }
-            return;
-        }
-
-        setAudioProgressMap((prev) => ({
-            ...prev,
-            [audioKey]: {
-                positionMillis: status.positionMillis ?? 0,
-                durationMillis: status.durationMillis ?? 0,
-            },
-        }));
-
-        if (status.isPlaying) {
-            setPlayingAudioKey(audioKey);
-        } else if (activeAudioKeyRef.current === audioKey) {
-            setPlayingAudioKey(null);
-        }
-
-        if (status.didJustFinish) {
-            setPlayingAudioKey(null);
-        }
-    }, []);
+        },
+        [],
+    );
 
     const stopAndUnloadAudio = useCallback(async () => {
         const active = activeAudioRef.current;
@@ -91,8 +173,13 @@ export function useMessageAudioPlayback() {
             const status = await sound.getStatusAsync();
             if (!status.isLoaded) return;
 
-            const durationMillis = status.durationMillis ?? audioProgressMap[audioKey]?.durationMillis ?? 0;
-            const nextPosition = Math.round(Math.max(0, Math.min(1, ratio)) * durationMillis);
+            const durationMillis =
+                status.durationMillis ??
+                audioProgressMap[audioKey]?.durationMillis ??
+                0;
+            const nextPosition = Math.round(
+                Math.max(0, Math.min(1, ratio)) * durationMillis,
+            );
 
             await sound.setPositionAsync(nextPosition);
             setAudioProgressMap((prev) => ({
@@ -107,13 +194,24 @@ export function useMessageAudioPlayback() {
     );
 
     const seekAudioByLocation = useCallback(
-        (audioKey: string, audioUrl: string, locationX: number, shouldThrottle: boolean) => {
+        (
+            audioKey: string,
+            audioUrl: string,
+            locationX: number,
+            shouldThrottle: boolean,
+        ) => {
             const trackWidth = Math.max(audioTrackWidthMap[audioKey] ?? 0, 1);
             const ratio = locationX / trackWidth;
             const clampedRatio = Math.min(1, Math.max(0, ratio));
 
-            const nextBoundary = clampedRatio <= 0.02 ? "start" : clampedRatio >= 0.98 ? "end" : null;
-            const previousBoundary = audioBoundaryStateRef.current[audioKey] ?? null;
+            const nextBoundary =
+                clampedRatio <= 0.02
+                    ? "start"
+                    : clampedRatio >= 0.98
+                      ? "end"
+                      : null;
+            const previousBoundary =
+                audioBoundaryStateRef.current[audioKey] ?? null;
 
             if (nextBoundary !== previousBoundary) {
                 audioBoundaryStateRef.current[audioKey] = nextBoundary;
@@ -134,16 +232,19 @@ export function useMessageAudioPlayback() {
         [audioTrackWidthMap, seekAudioToRatio],
     );
 
-    const handleSeekInteractionStart = useCallback((audioKey: string) => {
-        setActiveSeekAudioKey(audioKey);
-        audioSeekScale.stopAnimation();
-        Animated.spring(audioSeekScale, {
-            toValue: 1.07,
-            speed: 28,
-            bounciness: 5,
-            useNativeDriver: true,
-        }).start();
-    }, [audioSeekScale]);
+    const handleSeekInteractionStart = useCallback(
+        (audioKey: string) => {
+            setActiveSeekAudioKey(audioKey);
+            audioSeekScale.stopAnimation();
+            Animated.spring(audioSeekScale, {
+                toValue: 1.07,
+                speed: 28,
+                bounciness: 5,
+                useNativeDriver: true,
+            }).start();
+        },
+        [audioSeekScale],
+    );
 
     const handleSeekInteractionEnd = useCallback(() => {
         audioSeekScale.stopAnimation();
@@ -157,16 +258,19 @@ export function useMessageAudioPlayback() {
         });
     }, [audioSeekScale]);
 
-    const handleAudioPressIn = useCallback((audioKey: string) => {
-        setActivePressAudioKey(audioKey);
-        audioPressScale.stopAnimation();
-        Animated.timing(audioPressScale, {
-            toValue: 0.92,
-            duration: 90,
-            easing: Easing.out(Easing.quad),
-            useNativeDriver: true,
-        }).start();
-    }, [audioPressScale]);
+    const handleAudioPressIn = useCallback(
+        (audioKey: string) => {
+            setActivePressAudioKey(audioKey);
+            audioPressScale.stopAnimation();
+            Animated.timing(audioPressScale, {
+                toValue: 0.92,
+                duration: 90,
+                easing: Easing.out(Easing.quad),
+                useNativeDriver: true,
+            }).start();
+        },
+        [audioPressScale],
+    );
 
     const handleAudioPressOut = useCallback(() => {
         audioPressScale.stopAnimation();
@@ -192,11 +296,13 @@ export function useMessageAudioPlayback() {
                     setAudioLoadingKey(audioKey);
                     await stopAndUnloadAudio();
 
-                    const { sound: createdSound } = await Audio.Sound.createAsync(
-                        { uri: audioUrl },
-                        { shouldPlay: false },
-                        (status) => handleAudioStatusUpdate(audioKey, status),
-                    );
+                    const { sound: createdSound } =
+                        await Audio.Sound.createAsync(
+                            { uri: audioUrl },
+                            { shouldPlay: false },
+                            (status) =>
+                                handleAudioStatusUpdate(audioKey, status),
+                        );
 
                     sound = createdSound;
                     activeAudioRef.current = createdSound;
@@ -206,11 +312,20 @@ export function useMessageAudioPlayback() {
                 const status = await sound.getStatusAsync();
                 if (!status.isLoaded) return;
 
-                const durationMillis = status.durationMillis ?? audioProgressMap[audioKey]?.durationMillis ?? 0;
-                const currentPosition = status.positionMillis ?? audioProgressMap[audioKey]?.positionMillis ?? 0;
+                const durationMillis =
+                    status.durationMillis ??
+                    audioProgressMap[audioKey]?.durationMillis ??
+                    0;
+                const currentPosition =
+                    status.positionMillis ??
+                    audioProgressMap[audioKey]?.positionMillis ??
+                    0;
                 const maxPosition = Math.max(durationMillis, 0);
                 const unclampedNext = currentPosition + deltaMillis;
-                const nextPosition = maxPosition > 0 ? Math.min(maxPosition, Math.max(0, unclampedNext)) : Math.max(0, unclampedNext);
+                const nextPosition =
+                    maxPosition > 0
+                        ? Math.min(maxPosition, Math.max(0, unclampedNext))
+                        : Math.max(0, unclampedNext);
 
                 await sound.setPositionAsync(nextPosition);
 
@@ -233,12 +348,25 @@ export function useMessageAudioPlayback() {
     );
 
     const toggleAudioPlayback = useCallback(
-        async (audioKey: string, audioUrl: string) => {
+        async (audioKey: string, audioUrl: string, mimeType?: string) => {
             try {
                 setAudioLoadingKey(audioKey);
 
-                if (activeAudioRef.current && activeAudioKeyRef.current === audioKey) {
-                    const status = await activeAudioRef.current.getStatusAsync();
+                const shouldUseExternalPlayback =
+                    isLikelyUnsupportedAudioFormat(audioUrl, mimeType);
+                if (shouldUseExternalPlayback) {
+                    promptExternalAudioPlayback(audioUrl);
+                    return;
+                }
+
+                await ensurePlaybackAudioMode();
+
+                if (
+                    activeAudioRef.current &&
+                    activeAudioKeyRef.current === audioKey
+                ) {
+                    const status =
+                        await activeAudioRef.current.getStatusAsync();
 
                     handleAudioStatusUpdate(audioKey, status);
 
@@ -249,6 +377,23 @@ export function useMessageAudioPlayback() {
                     }
 
                     if (status.isLoaded) {
+                        const durationMillis = status.durationMillis ?? 0;
+                        const positionMillis = status.positionMillis ?? 0;
+                        const isAtTrackEnd =
+                            durationMillis > 0 &&
+                            positionMillis >= durationMillis - 250;
+
+                        if (isAtTrackEnd) {
+                            await activeAudioRef.current.setPositionAsync(0);
+                            setAudioProgressMap((prev) => ({
+                                ...prev,
+                                [audioKey]: {
+                                    positionMillis: 0,
+                                    durationMillis,
+                                },
+                            }));
+                        }
+
                         await activeAudioRef.current.playAsync();
                         setPlayingAudioKey(audioKey);
                     }
@@ -268,16 +413,8 @@ export function useMessageAudioPlayback() {
                 activeAudioKeyRef.current = audioKey;
                 setPlayingAudioKey(audioKey);
             } catch {
-                const isWebm = /\.webm($|\?)/i.test(audioUrl);
-                if (isWebm) {
-                    Alert.alert(
-                        "Thong bao",
-                        "Thiet bi khong ho tro phat webm trong app. Ban co muon mo trinh duyet de nghe khong?",
-                        [
-                            { text: "Huy", style: "cancel" },
-                            { text: "Mo", onPress: () => { void Linking.openURL(audioUrl); } },
-                        ],
-                    );
+                if (/^https?:\/\//i.test(audioUrl)) {
+                    promptExternalAudioPlayback(audioUrl);
                 } else {
                     Alert.alert("Thong bao", "Khong the phat tep am thanh");
                 }
@@ -285,7 +422,13 @@ export function useMessageAudioPlayback() {
                 setAudioLoadingKey(null);
             }
         },
-        [handleAudioStatusUpdate, stopAndUnloadAudio],
+        [
+            ensurePlaybackAudioMode,
+            handleAudioStatusUpdate,
+            isLikelyUnsupportedAudioFormat,
+            promptExternalAudioPlayback,
+            stopAndUnloadAudio,
+        ],
     );
 
     useEffect(() => {
@@ -296,8 +439,18 @@ export function useMessageAudioPlayback() {
 
         const loop = Animated.loop(
             Animated.sequence([
-                Animated.timing(audioPlayPulse, { toValue: 1.09, duration: 340, easing: Easing.out(Easing.quad), useNativeDriver: true }),
-                Animated.timing(audioPlayPulse, { toValue: 1, duration: 360, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+                Animated.timing(audioPlayPulse, {
+                    toValue: 1.09,
+                    duration: 340,
+                    easing: Easing.out(Easing.quad),
+                    useNativeDriver: true,
+                }),
+                Animated.timing(audioPlayPulse, {
+                    toValue: 1,
+                    duration: 360,
+                    easing: Easing.inOut(Easing.quad),
+                    useNativeDriver: true,
+                }),
             ]),
         );
 

@@ -1,9 +1,10 @@
 import { useState, useEffect, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { ArrowLeft, Loader2, Upload, X, Save, Globe, Lock, ShieldAlert } from "lucide-react";
+import { ArrowLeft, Loader2, Upload, Save, ShieldAlert, Globe, Lock } from "lucide-react";
 import pageService, { type Page } from "../services/pageService";
 import { useCurrentUser } from "../hooks/useCurrentUser";
 import { buildS3Url } from "../utils/s3";
+import ConfirmModal from "../components/common/ConfirmModal";
 
 const CATEGORIES = [
     "Kinh doanh",
@@ -28,6 +29,7 @@ export default function EditPage() {
     const [saving, setSaving] = useState(false);
     const [page, setPage] = useState<Page | null>(null);
     const [accessDenied, setAccessDenied] = useState(false);
+    const [notification, setNotification] = useState<{ title: string; message: string; variant?: "warning" | "default" } | null>(null);
 
     // Avatar
     const [avatarPreview, setAvatarPreview] = useState<string | null>(null);
@@ -153,14 +155,15 @@ export default function EditPage() {
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
 
-        if (!validate() || !pageId) return;
+        const numericPageId = pageId ? Number(pageId) : null;
+        if (!validate() || !numericPageId || !Number.isFinite(numericPageId) || numericPageId <= 0) return;
 
         setSaving(true);
         try {
             // Upload new avatar if selected
             if (avatarFile) {
                 const extension = avatarFile.name.split('.').pop() || 'jpg';
-                const uploadUrl = await pageService.getUploadAvatarUrl('pages', Number(pageId), extension);
+                const uploadUrl = await pageService.getUploadAvatarUrl('pages', numericPageId, extension);
 
                 await fetch(uploadUrl, {
                     method: 'PUT',
@@ -174,7 +177,7 @@ export default function EditPage() {
             // Upload new cover if selected
             if (coverFile) {
                 const extension = coverFile.name.split('.').pop() || 'jpg';
-                const uploadUrl = await pageService.getUploadCoverUrl('pages', Number(pageId), extension);
+                const uploadUrl = await pageService.getUploadCoverUrl('pages', numericPageId, extension);
 
                 await fetch(uploadUrl, {
                     method: 'PUT',
@@ -186,7 +189,7 @@ export default function EditPage() {
             }
 
             // Update page info (images already updated by backend when we called getUploadAvatarUrl/getUploadCoverUrl)
-            await pageService.updatePage(Number(pageId), {
+            await pageService.updatePage(numericPageId, {
                 name: formData.name,
                 username: formData.username,
                 category: formData.category,
@@ -198,11 +201,10 @@ export default function EditPage() {
                 status: formData.status,
             });
 
-            alert("Cập nhật page thành công!");
             navigate(`/pages/${pageId}`);
         } catch (error: any) {
             console.error("Error updating page:", error);
-            alert(error.response?.data?.message || "Không thể cập nhật page. Vui lòng thử lại.");
+            setNotification({ title: "Lỗi", message: error.response?.data?.message || "Không thể cập nhật page. Vui lòng thử lại.", variant: "warning" });
         } finally {
             setSaving(false);
         }
@@ -248,6 +250,15 @@ export default function EditPage() {
 
     return (
         <div className="max-w-2xl mx-auto p-4 md:p-6">
+            {notification && (
+                <ConfirmModal
+                    open
+                    title={notification.title}
+                    message={notification.message}
+                    variant={notification.variant ?? "warning"}
+                    onConfirm={() => setNotification(null)}
+                />
+            )}
             {/* Header */}
             <div className="flex items-center gap-4 mb-6">
                 <button
@@ -400,6 +411,53 @@ export default function EditPage() {
                         rows={4}
                         className="w-full px-4 py-3 bg-gray-100 dark:bg-[#262626] rounded-lg focus:ring-2 focus:ring-blue-500 dark:text-white resize-none"
                     />
+                </div>
+
+                {/* Privacy */}
+                <div>
+                    <label className="block text-sm font-medium dark:text-white mb-2">
+                        Chế độ trang
+                    </label>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <button
+                            type="button"
+                            onClick={() => setFormData((prev) => ({ ...prev, status: "PUBLIC" }))}
+                            className={`flex items-start gap-3 p-3 rounded-lg border text-left transition-colors ${
+                                formData.status === "PUBLIC"
+                                    ? "border-blue-500 bg-blue-50/50 dark:bg-blue-900/20"
+                                    : "border-gray-200 dark:border-[#363636] hover:bg-gray-50 dark:hover:bg-[#262626]"
+                            }`}
+                        >
+                            <Globe size={20} className={formData.status === "PUBLIC" ? "text-blue-500" : "text-gray-500"} />
+                            <div>
+                                <p className={`text-sm font-semibold ${formData.status === "PUBLIC" ? "text-blue-600 dark:text-blue-400" : "dark:text-white"}`}>
+                                    Công khai
+                                </p>
+                                <p className="text-xs text-gray-500 dark:text-gray-400">
+                                    Ai cũng có thể tham gia và xem bài viết
+                                </p>
+                            </div>
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => setFormData((prev) => ({ ...prev, status: "PRIVATE" }))}
+                            className={`flex items-start gap-3 p-3 rounded-lg border text-left transition-colors ${
+                                formData.status === "PRIVATE"
+                                    ? "border-blue-500 bg-blue-50/50 dark:bg-blue-900/20"
+                                    : "border-gray-200 dark:border-[#363636] hover:bg-gray-50 dark:hover:bg-[#262626]"
+                            }`}
+                        >
+                            <Lock size={20} className={formData.status === "PRIVATE" ? "text-blue-500" : "text-gray-500"} />
+                            <div>
+                                <p className={`text-sm font-semibold ${formData.status === "PRIVATE" ? "text-blue-600 dark:text-blue-400" : "dark:text-white"}`}>
+                                    Riêng tư
+                                </p>
+                                <p className="text-xs text-gray-500 dark:text-gray-400">
+                                    Cần được duyệt mới có thể tham gia
+                                </p>
+                            </div>
+                        </button>
+                    </div>
                 </div>
 
                 {/* Contact Info */}

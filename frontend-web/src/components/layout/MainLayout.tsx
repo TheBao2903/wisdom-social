@@ -1,10 +1,12 @@
 import { Outlet, useLocation } from "react-router-dom";
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect, useMemo } from "react";
 import Sidebar from "../nav/Sidebar";
 import BottomNav from "../nav/BottomNav";
-import { suggestedUsers } from "../../api/mockData";
 import { Link } from "react-router-dom";
+import { Loader2, UserPlus, X } from "lucide-react";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
+import { useForceLogout } from "../../hooks/useForceLogout";
+import DeletionPendingNotice from "../security/DeletionPendingNotice";
 import { useAvatarBuster } from "../../context/AvatarContext";
 import { FriendNotificationProvider } from "../../contexts/FriendNotificationContext";
 import {
@@ -13,6 +15,10 @@ import {
 } from "../../contexts/FriendDataContext";
 import { buildS3Url } from "../../utils/s3";
 import { useSidebarLayout } from "../../hooks/useSidebarLayout";
+import friendService from "../../services/friendService";
+import type { User } from "../../types";
+
+type Suggestion = User & { mutualFriendsCount?: number };
 
 // Inner component that uses FriendDataContext
 function MainLayoutContent() {
@@ -22,6 +28,75 @@ function MainLayoutContent() {
     const { sidebarWidth } = useSidebarLayout();
     const [isRightSidebarExpanded, setIsRightSidebarExpanded] = useState(false);
     const isMessagesRoute = location.pathname.startsWith("/messages");
+    const isFullWidthRoute = /^\/pages\/\d/.test(location.pathname);
+
+    // Lắng nghe force-logout event từ backend (khi admin khóa tài khoản hoặc
+    // logoutAllDevices được gọi từ thiết bị khác). Truyền cả userId (kênh chính,
+    // luôn tồn tại) lẫn phone (tương thích ngược).
+    useForceLogout(currentUser?.phone, currentUser?.id);
+
+    // Friend suggestions for the right sidebar
+    const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
+    const [suggestionsLoading, setSuggestionsLoading] = useState(false);
+    const [pendingId, setPendingId] = useState<number | null>(null);
+
+    // Pull sentRequests/friends from context so the widget reacts in realtime
+    // when the user (de)sends a request from any other page (FriendRequests,
+    // profile, etc.). No refetch needed — derived state stays in sync.
+    const { sentRequests, friends, sendRequest, cancelSentRequest, refreshTrigger } =
+        useFriendData();
+
+    // Only refetch the suggestion list when the current user changes or when
+    // backend pushes a friend event (refreshTrigger). Send/cancel locally
+    // does not bump refreshTrigger, so the list keeps its order.
+    useEffect(() => {
+        const id = currentUser?.id;
+        if (!id) return;
+        let cancelled = false;
+        setSuggestionsLoading(true);
+        friendService
+            .getFriendSuggestions(id, 8)
+            .then((list) => {
+                if (cancelled) return;
+                setSuggestions(list as Suggestion[]);
+            })
+            .finally(() => {
+                if (!cancelled) setSuggestionsLoading(false);
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [currentUser?.id, refreshTrigger]);
+
+    // Derive "already-sent" and "already-friend" sets from context for O(1) lookup.
+    const sentIds = useMemo(
+        () => new Set(sentRequests.map((u) => u.id)),
+        [sentRequests],
+    );
+    const friendIds = useMemo(
+        () => new Set(friends.map((u) => u.id)),
+        [friends],
+    );
+
+    // Hide users who are already friends from the suggestion list (e.g. after
+    // an accept happens via WebSocket trigger). Keep "sent" rows visible so
+    // the user can cancel right from the widget.
+    const visibleSuggestions = useMemo(
+        () => suggestions.filter((u) => !friendIds.has(u.id)),
+        [suggestions, friendIds],
+    );
+
+    const handleSendRequest = async (target: Suggestion) => {
+        setPendingId(target.id);
+        await sendRequest(target);
+        setPendingId(null);
+    };
+
+    const handleCancelRequest = async (targetId: number) => {
+        setPendingId(targetId);
+        await cancelSentRequest(targetId);
+        setPendingId(null);
+    };
 
     console.log(
         "🔴 MainLayoutContent re-render with currentUser:",
@@ -30,6 +105,9 @@ function MainLayoutContent() {
 
     return (
         <div className="min-h-screen bg-[#fafafa] dark:bg-[#000]">
+            {/* Cảnh báo tài khoản đang chờ xóa khi vừa vào app (giống mobile) */}
+            <DeletionPendingNotice />
+
             {/* Sidebar for desktop */}
             <Sidebar />
 
@@ -38,9 +116,13 @@ function MainLayoutContent() {
                 className="min-h-screen pb-16 md:pb-0 xl:mr-[72px]"
                 style={{ marginLeft: `${sidebarWidth}px` }}
             >
-                <div className="max-w-[975px] mx-auto pt-6 px-8 md:px-12">
+                {isFullWidthRoute ? (
                     <Outlet />
-                </div>
+                ) : (
+                    <div className="max-w-[975px] mx-auto pt-6 px-8 md:px-12">
+                        <Outlet />
+                    </div>
+                )}
             </main>
 
             {/* Right Panel for desktop - Suggestions */}
@@ -86,52 +168,91 @@ function MainLayoutContent() {
                             </Link>
                         )}
 
-                        {/* Suggestions for you */}
+                        {/* Friend suggestions */}
                         <div className={isRightSidebarExpanded ? "" : "hidden"}>
                             <div className="flex items-center justify-between mb-4">
                                 <h2 className="text-sm font-semibold text-gray-500 dark:text-gray-400">
-                                    Suggestions For You
+                                    Gợi ý kết bạn
                                 </h2>
-                                <button className="text-xs font-semibold hover:text-gray-500 dark:text-white dark:hover:text-gray-400">
-                                    See All
-                                </button>
+                                <Link
+                                    to="/friend-requests"
+                                    className="text-xs font-semibold hover:text-gray-500 dark:text-white dark:hover:text-gray-400"
+                                >
+                                    Xem tất cả
+                                </Link>
                             </div>
 
-                            <div className="space-y-3">
-                                {suggestedUsers.map((user) => (
-                                    <div
-                                        key={user.id}
-                                        className="flex items-center justify-between"
-                                    >
-                                        <Link
-                                            to={`/profile/${user.username}`}
-                                            className="flex items-center gap-3 flex-1 min-w-0"
-                                        >
-                                            <img
-                                                src={
-                                                    buildS3Url(
-                                                        user.avatarUrl,
-                                                    ) ||
-                                                    "https://i.pravatar.cc/150"
-                                                }
-                                                alt={user.username}
-                                                className="w-11 h-11 rounded-full flex-shrink-0"
-                                            />
-                                            <div className="flex-1 min-w-0">
-                                                <p className="text-sm font-semibold truncate dark:text-white">
-                                                    {user.username}
-                                                </p>
-                                                <p className="text-xs text-gray-500 dark:text-gray-400 truncate">
-                                                    Suggested for you
-                                                </p>
+                            {suggestionsLoading ? (
+                                <div className="flex items-center justify-center py-6">
+                                    <Loader2 className="animate-spin text-blue-500" size={20} />
+                                </div>
+                            ) : visibleSuggestions.length === 0 ? (
+                                <p className="text-xs text-gray-500 dark:text-gray-400 py-4">
+                                    Không có gợi ý
+                                </p>
+                            ) : (
+                                <div className="space-y-3">
+                                    {visibleSuggestions.map((user) => {
+                                        const sent = sentIds.has(user.id);
+                                        const isPending = pendingId === user.id;
+                                        return (
+                                            <div
+                                                key={user.id}
+                                                className="flex items-center justify-between gap-2"
+                                            >
+                                                <Link
+                                                    to={`/profile/${user.username}`}
+                                                    className="flex items-center gap-3 flex-1 min-w-0"
+                                                >
+                                                    <img
+                                                        src={
+                                                            buildS3Url(user.avatarUrl) ||
+                                                            user.avatarUrl ||
+                                                            "https://i.pravatar.cc/150"
+                                                        }
+                                                        alt={user.username}
+                                                        className="w-11 h-11 rounded-full shrink-0 object-cover"
+                                                    />
+                                                    <div className="flex-1 min-w-0">
+                                                        <p className="text-sm font-semibold truncate dark:text-white">
+                                                            {user.username}
+                                                        </p>
+                                                        <p className="text-xs text-gray-500 dark:text-gray-400 truncate">
+                                                            {sent
+                                                                ? "Đang chờ phản hồi"
+                                                                : user.mutualFriendsCount && user.mutualFriendsCount > 0
+                                                                    ? `${user.mutualFriendsCount} bạn chung`
+                                                                    : user.fullName || user.name || "Gợi ý cho bạn"}
+                                                        </p>
+                                                    </div>
+                                                </Link>
+                                                <button
+                                                    onClick={() =>
+                                                        sent
+                                                            ? handleCancelRequest(user.id)
+                                                            : handleSendRequest(user)
+                                                    }
+                                                    disabled={isPending}
+                                                    className={`shrink-0 inline-flex items-center justify-center w-8 h-8 rounded-full transition-colors disabled:opacity-60 ${
+                                                        sent
+                                                            ? "bg-gray-100 dark:bg-[#262626] text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-[#363636]"
+                                                            : "bg-blue-500 hover:bg-blue-600 text-white"
+                                                    }`}
+                                                    title={sent ? "Hủy lời mời" : "Kết bạn"}
+                                                >
+                                                    {isPending ? (
+                                                        <Loader2 className="animate-spin" size={14} />
+                                                    ) : sent ? (
+                                                        <X size={14} />
+                                                    ) : (
+                                                        <UserPlus size={14} />
+                                                    )}
+                                                </button>
                                             </div>
-                                        </Link>
-                                        <button className="text-xs font-semibold text-[#0095f6] hover:text-[#00376b] flex-shrink-0">
-                                            Follow
-                                        </button>
-                                    </div>
-                                ))}
-                            </div>
+                                        );
+                                    })}
+                                </div>
+                            )}
                         </div>
 
                         {/* Footer Links */}

@@ -1,8 +1,9 @@
 import { useState, useEffect } from "react";
 import { Ban, Loader2, AlertCircle } from "lucide-react";
 import type { User } from "../../types";
-import { friendService } from "../../services/friendService";
+import blockService from "../../services/blockService";
 import { buildS3Url } from "../../utils/s3";
+import ConfirmModal from "../common/ConfirmModal";
 
 interface ProfileBlockedUsersProps {
   userId: string | number;
@@ -16,6 +17,7 @@ export default function ProfileBlockedUsers({
   const [blockedUsers, setBlockedUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [notification, setNotification] = useState<string>("");
 
   useEffect(() => {
     if (!isOwnProfile) {
@@ -27,7 +29,7 @@ export default function ProfileBlockedUsers({
       setLoading(true);
       setError("");
       try {
-        const users = await friendService.getBlockedUsers(userId);
+        const users = await blockService.getBlockedUsers(Number(userId));
         setBlockedUsers(users || []);
       } catch (err) {
         console.error("Error loading blocked users:", err);
@@ -89,21 +91,25 @@ export default function ProfileBlockedUsers({
 
   const handleUnblock = async (blockedId: string | number) => {
     try {
-      await friendService.unblockUser({
-        senderId: Number(userId),
-        receivedId: Number(blockedId),
-      });
+      await blockService.unblockUser(Number(userId), Number(blockedId));
       setBlockedUsers((prev) =>
         prev.filter((u) => u.id !== blockedId)
       );
     } catch (err) {
       console.error("Error unblocking user:", err);
-      alert("Không thể bỏ chặn. Vui lòng thử lại.");
+      setNotification("Không thể bỏ chặn. Vui lòng thử lại.");
     }
   };
 
   return (
     <div className="space-y-4">
+      <ConfirmModal
+        open={!!notification}
+        title="Lỗi"
+        message={notification}
+        variant="warning"
+        onConfirm={() => setNotification("")}
+      />
       {blockedUsers.map((user) => (
         <div
           key={user.id}

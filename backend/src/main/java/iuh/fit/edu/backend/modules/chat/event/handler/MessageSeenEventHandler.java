@@ -1,0 +1,39 @@
+package iuh.fit.edu.backend.modules.chat.event.handler;
+
+import iuh.fit.edu.backend.common.event.handler.RedisEventHandler;
+import iuh.fit.edu.backend.modules.chat.event.payload.MessageSeenEvent;
+import iuh.fit.edu.backend.common.event.type.DomainEventType;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.messaging.simp.SimpMessagingTemplate;
+import org.springframework.stereotype.Component;
+
+import java.util.Set;
+
+@Slf4j
+@Component
+@RequiredArgsConstructor
+public class MessageSeenEventHandler implements RedisEventHandler {
+
+    private final SimpMessagingTemplate messagingTemplate;
+
+    @Override
+    public Class<?> getSupportedClass() {
+        return MessageSeenEvent.class;
+    }
+
+    @Override
+    public String getSupportedEventType() {
+        return DomainEventType.MESSAGE_SEEN.toString();
+    }
+
+    // Hàm xử lý sự kiện xem tin nhắn cho tất cả user đăng ký conversation
+    @Override
+    public void handle(Object eventPayload, Set<Long> targetMemberIds) {
+        MessageSeenEvent event = (MessageSeenEvent) eventPayload;
+        String destination = "/topic/conversation/" + event.getMessageSeenResponse().getConversationId();
+        // Bắn socket cho tất cả người dùng đăng ký kênh này
+        messagingTemplate.convertAndSend(destination, event);
+        log.info("Broadcast MessageSeenEvent to {}", destination);
+    }
+}

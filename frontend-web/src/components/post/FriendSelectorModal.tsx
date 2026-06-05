@@ -1,7 +1,8 @@
 import { useState, useEffect } from "react";
 import { X, Search } from "lucide-react";
-import axios from "axios";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
+
+import { friendService } from "../../services/friendService";
 
 interface Friend {
   id: string;
@@ -13,7 +14,7 @@ interface Friend {
 interface FriendSelectorModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onConfirm: (selectedUsernames: string[]) => void;
+  onConfirm: (selectedUsernames: string[], selectedFriends: Friend[]) => void;
   title: string;
   description: string;
   initialSelected?: string[];
@@ -38,9 +39,11 @@ export default function FriendSelectorModal({
   // Fetch friends list
   useEffect(() => {
     if (isOpen) {
+      // Initialize selectedUsernames with the initialSelected prop whenever modal opens
+      setSelectedUsernames(initialSelected);
       fetchFriends();
     }
-  }, [isOpen]);
+  }, [isOpen, initialSelected]);
 
   // Filter friends based on search
   useEffect(() => {
@@ -66,29 +69,9 @@ export default function FriendSelectorModal({
         return;
       }
 
-      const response = await axios.get(
-        `http://localhost:8080/api/users/${currentUser.id}/friends`
-      );
-
-      let friendsData = response.data;
-      if (typeof friendsData === "string") {
-        friendsData = JSON.parse(friendsData);
-      }
-
-      const mappedFriends = (friendsData.data || friendsData || []).map(
-        (friend: any) => ({
-          id: friend.userId?.toString() || friend.id?.toString(),
-          username: friend.username,
-          fullName: friend.name || friend.fullName,
-          avatar:
-            friend.avatarUrl ||
-            friend.avatar ||
-            "https://i.pravatar.cc/150?img=5",
-        })
-      );
-
-      setFriends(mappedFriends);
-      setFilteredFriends(mappedFriends);
+      const friendsData = await friendService.getFriends(currentUser.id);
+      setFriends(friendsData);
+      setFilteredFriends(friendsData);
     } catch (error) {
       console.error("Error fetching friends:", error);
       setFriends([]);
@@ -107,15 +90,24 @@ export default function FriendSelectorModal({
   };
 
   const handleConfirm = () => {
-    onConfirm(selectedUsernames);
+    const selectedFriendObjects = friends.filter((f) =>
+      selectedUsernames.includes(f.username)
+    );
+    onConfirm(selectedUsernames, selectedFriendObjects);
     onClose();
   };
 
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white dark:bg-[#262626] rounded-xl max-w-md w-full max-h-[80vh] flex flex-col shadow-2xl">
+    <div 
+      className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4"
+      onClick={onClose}
+    >
+      <div 
+        className="bg-white dark:bg-[#262626] rounded-xl max-w-md w-full max-h-[80vh] flex flex-col shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-[#363636]">
           <h3 className="text-base font-semibold dark:text-white">{title}</h3>

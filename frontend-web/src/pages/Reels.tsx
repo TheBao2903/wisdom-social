@@ -48,7 +48,7 @@ export default function Reels() {
                                 className="flex items-center gap-2 mb-3"
                             >
                                 <img
-                                    src={reel.user.avatar}
+                                    src={reel.user.avatarUrl}
                                     alt={reel.user.username}
                                     className="w-8 h-8 rounded-full object-cover border-2 border-white"
                                 />

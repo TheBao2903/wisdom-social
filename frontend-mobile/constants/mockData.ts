@@ -202,34 +202,34 @@ export const mockPosts: Post[] = [
     },
 ];
 
-export const mockNotifications: AppNotification[] = [
-    {
-        id: "n1",
-        type: "like",
-        userId: "u2",
-        postId: "p5",
-        message: "liked your photo.",
-        createdAt: "2026-04-08T16:30:00.000Z",
-        read: false,
-    },
-    {
-        id: "n2",
-        type: "follow",
-        userId: "u4",
-        message: "started following you.",
-        createdAt: "2026-04-08T14:10:00.000Z",
-        read: false,
-    },
-    {
-        id: "n3",
-        type: "comment",
-        userId: "u3",
-        postId: "p5",
-        message: "commented: Nice setup!",
-        createdAt: "2026-04-08T11:40:00.000Z",
-        read: true,
-    },
-];
+// export const mockNotifications: AppNotification[] = [
+//     {
+//         id: "n1",
+//         type: "like",
+//         userId: "u2",
+//         postId: "p5",
+//         message: "liked your photo.",
+//         createdAt: "2026-04-08T16:30:00.000Z",
+//         read: false,
+//     },
+//     {
+//         id: "n2",
+//         type: "follow",
+//         userId: "u4",
+//         message: "started following you.",
+//         createdAt: "2026-04-08T14:10:00.000Z",
+//         read: false,
+//     },
+//     {
+//         id: "n3",
+//         type: "comment",
+//         userId: "u3",
+//         postId: "p5",
+//         message: "commented: Nice setup!",
+//         createdAt: "2026-04-08T11:40:00.000Z",
+//         read: true,
+//     },
+// ];
 
 export const mockConversations: Conversation[] = [
     {

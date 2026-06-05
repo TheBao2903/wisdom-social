@@ -1,6 +1,8 @@
 import { AppProvider } from "@/context/AppContext";
+import GlobalIncomingCallNotifier from "@/components/GlobalIncomingCallNotifier";
 import { Stack } from "expo-router";
 import { StatusBar } from "expo-status-bar";
+import { GestureHandlerRootView } from "react-native-gesture-handler";
 
 function RootNavigator() {
     return (
@@ -10,6 +12,7 @@ function RootNavigator() {
                 <Stack.Screen name="(auth)" />
                 <Stack.Screen name="(tabs)" />
                 <Stack.Screen name="(stack)" />
+                <Stack.Screen name="g" />
             </Stack>
         </>
     );
@@ -17,8 +20,11 @@ function RootNavigator() {
 
 export default function RootLayout() {
     return (
-        <AppProvider>
-            <RootNavigator />
-        </AppProvider>
+        <GestureHandlerRootView style={{ flex: 1 }}>
+            <AppProvider>
+                <RootNavigator />
+                <GlobalIncomingCallNotifier />
+            </AppProvider>
+        </GestureHandlerRootView>
     );
 }

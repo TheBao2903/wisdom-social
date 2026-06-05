@@ -1,14 +1,21 @@
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useState, useEffect } from "react";
 import { ArrowLeft, CheckCircle2, Eye, EyeOff, KeyRound, Lock } from "lucide-react";
-import { resetPassword } from "../utils/auth";
+import { resetPassword, AuthError } from "../utils/auth";
 import { validateResetPasswordForm } from "../utils/validation";
+import PasswordStrengthMeter from "../components/auth/PasswordStrengthMeter";
+
+const formatCountdown = (totalSeconds: number): string => {
+    const m = Math.floor(totalSeconds / 60);
+    const s = totalSeconds % 60;
+    return `${m}:${s.toString().padStart(2, "0")}`;
+};
 
 export default function ResetPassword() {
     const location = useLocation();
     const navigate = useNavigate();
     const { phone } = location.state || {};
-    
+
     const [otp, setOtp] = useState("");
     const [password, setPassword] = useState("");
     const [confirmPassword, setConfirmPassword] = useState("");
@@ -16,6 +23,7 @@ export default function ResetPassword() {
     const [showConfirmPassword, setShowConfirmPassword] = useState(false);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState("");
+    const [lockCountdown, setLockCountdown] = useState(0);
 
     useEffect(() => {
         if (!phone) {
@@ -23,8 +31,15 @@ export default function ResetPassword() {
         }
     }, [phone, navigate]);
 
+    useEffect(() => {
+        if (lockCountdown <= 0) return;
+        const t = setTimeout(() => setLockCountdown((s) => s - 1), 1000);
+        return () => clearTimeout(t);
+    }, [lockCountdown]);
+
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
+        if (lockCountdown > 0) return;
         setError("");
 
         if (!otp || otp.length !== 6) {
@@ -44,6 +59,9 @@ export default function ResetPassword() {
             alert("Đặt lại mật khẩu thành công! Vui lòng đăng nhập.");
             navigate("/login", { replace: true });
         } catch (err: any) {
+            if (err instanceof AuthError && err.remainingSeconds && err.remainingSeconds > 0) {
+                setLockCountdown(err.remainingSeconds);
+            }
             setError(err.message || "Đặt lại mật khẩu thất bại. Vui lòng thử lại.");
         } finally {
             setLoading(false);
@@ -62,6 +80,11 @@ export default function ResetPassword() {
                     {error && (
                         <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600">
                             {error}
+                            {lockCountdown > 0 && (
+                                <div className="mt-1 font-semibold">
+                                    Thử lại sau {formatCountdown(lockCountdown)}
+                                </div>
+                            )}
                         </div>
                     )}
                     <div className="flex items-center rounded-xl border border-gray-200 bg-white px-3">
@@ -91,6 +114,7 @@ export default function ResetPassword() {
                             {showPassword ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
                         </button>
                     </div>
+                    <PasswordStrengthMeter password={password} />
                     <div className="flex items-center rounded-xl border border-gray-200 bg-white px-3">
                         <Lock className="h-4 w-4 text-blue-500" />
                         <input
@@ -107,11 +131,15 @@ export default function ResetPassword() {
                     </div>
                     <button
                         type="submit"
-                        disabled={loading}
+                        disabled={loading || lockCountdown > 0}
                         className="flex w-full items-center justify-center gap-2 rounded-xl bg-blue-500 py-3.5 text-white hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-50"
                     >
-                        {loading ? "Đang xử lý..." : "Cập nhật mật khẩu"}
-                        {!loading && <CheckCircle2 className="h-4 w-4" />}
+                        {loading
+                            ? "Đang xử lý..."
+                            : lockCountdown > 0
+                                ? `Thử lại sau ${formatCountdown(lockCountdown)}`
+                                : "Cập nhật mật khẩu"}
+                        {!loading && lockCountdown === 0 && <CheckCircle2 className="h-4 w-4" />}
                     </button>
                 </form>
                 <div className="text-center">

@@ -60,6 +60,11 @@ export function FriendNotificationProvider({
     const handleFriendAccept = (payload: FriendNotificationPayload) => {
         console.log("🔔 FriendNotificationProvider: onFriendAccept triggered", payload);
         callbacksRef.current.onFriendAccept?.(payload);
+        window.dispatchEvent(
+            new CustomEvent("friend-status-changed", {
+                detail: { ...payload, event: "friend-accept" },
+            }),
+        );
         console.log("🔄 Calling triggerRefreshAll()...");
         triggerRefreshAll(); // Refresh friend data
         console.log("✅ triggerRefreshAll() called");

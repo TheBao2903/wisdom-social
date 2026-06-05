@@ -4,34 +4,44 @@ import IncomingCallModal from "./IncomingCallModal";
 import websocketService, {
     type CallSignalPayload,
 } from "../../services/websocket";
+import { useAuth } from "../../contexts/AuthContext";
+import chatRuntimeStore from "../../stores/chatRuntimeStore";
 
-const LAST_USER_ID_KEY = "ws_user_id";
 const RECEIVER_RINGTONE_SRC = "/2.mp3";
 const STOP_ALL_CALL_AUDIO_EVENT = "call:stop-all-audio";
-
-function parseUserIdFromSearch(search: string): number {
-    const params = new URLSearchParams(search);
-    const parsed = Number(params.get("userId"));
-    if (Number.isFinite(parsed)) {
-        localStorage.setItem(LAST_USER_ID_KEY, String(parsed));
-        return parsed;
-    }
-
-    const persisted = Number(localStorage.getItem(LAST_USER_ID_KEY));
-    return Number.isFinite(persisted) ? persisted : 1;
-}
+const PENDING_INCOMING_CALL_KEY = "pending_incoming_call";
 
 function getConversationIdFromPath(pathname: string): number | null {
-    const match = pathname.match(/^\/messages\/(\d+)$/);
+    const match = pathname.match(/^\/messages\/(\d+)(?:\/call)?$/);
     if (!match) return null;
 
     const parsed = Number(match[1]);
     return Number.isFinite(parsed) ? parsed : null;
 }
 
+function getSignalCallerInfo(payload: CallSignalPayload): {
+    callerName?: string;
+    callerAvatar?: string;
+} {
+    const candidate = payload.candidate as
+        | { callerName?: unknown; callerAvatar?: unknown }
+        | undefined;
+    return {
+        callerName:
+            typeof candidate?.callerName === "string"
+                ? candidate.callerName
+                : undefined,
+        callerAvatar:
+            typeof candidate?.callerAvatar === "string"
+                ? candidate.callerAvatar
+                : undefined,
+    };
+}
+
 export default function GlobalIncomingCallNotifier() {
     const location = useLocation();
     const navigate = useNavigate();
+    const { currentUser } = useAuth();
 
     const [incomingCall, setIncomingCall] = useState<CallSignalPayload | null>(
         null,
@@ -42,14 +52,14 @@ export default function GlobalIncomingCallNotifier() {
     const incomingCallRef = useRef<CallSignalPayload | null>(null);
     const incomingNotificationRef = useRef<Notification | null>(null);
 
-    const userId = useMemo(
-        () => parseUserIdFromSearch(location.search),
-        [location.search],
-    );
+    const userId = currentUser?.id ?? 0;
     const currentConversationId = useMemo(
         () => getConversationIdFromPath(location.pathname),
         [location.pathname],
     );
+    const incomingCallerInfo = incomingCall
+        ? getSignalCallerInfo(incomingCall)
+        : {};
 
     useEffect(() => {
         incomingCallRef.current = incomingCall;
@@ -169,6 +179,7 @@ export default function GlobalIncomingCallNotifier() {
 
     const rejectIncomingCall = useCallback(() => {
         if (!incomingCall) return;
+        if (!userId) return;
 
         websocketService.sendCallSignal({
             event: "reject-call",
@@ -188,17 +199,22 @@ export default function GlobalIncomingCallNotifier() {
 
         broadcastStopAllCallAudio();
         stopRingtone();
-        navigate(`/messages/${incomingCall.conversationId}?userId=${userId}`);
+        sessionStorage.setItem(
+            PENDING_INCOMING_CALL_KEY,
+            JSON.stringify(incomingCall),
+        );
+        navigate(`/messages/${incomingCall.conversationId}/call`);
     }, [
         broadcastStopAllCallAudio,
         incomingCall,
         navigate,
         stopRingtone,
-        userId,
     ]);
 
     useEffect(() => {
         let active = true;
+        if (!userId) return;
+
         const onCallEvent = (event: CallSignalPayload) => {
             if (!active) return;
 
@@ -206,6 +222,24 @@ export default function GlobalIncomingCallNotifier() {
                 event.event === "incoming-call" ||
                 event.event === "call-user"
             ) {
+                const activeCall = chatRuntimeStore.getActiveCall();
+                if (
+                    activeCall &&
+                    activeCall.userId === userId &&
+                    activeCall.callId !== event.callId
+                ) {
+                    websocketService.sendCallSignal({
+                        event: "reject-call",
+                        conversationId: event.conversationId,
+                        callId: event.callId,
+                        callType: event.callType,
+                        fromUserId: userId,
+                        targetUserId: event.fromUserId,
+                        candidate: { reason: "busy" },
+                    });
+                    return;
+                }
+
                 if (currentConversationId === event.conversationId) {
                     return;
                 }
@@ -254,7 +288,8 @@ export default function GlobalIncomingCallNotifier() {
         if (!incomingCall) return;
         if (currentConversationId !== incomingCall.conversationId) return;
 
-        clearIncoming();
+        const timer = window.setTimeout(clearIncoming, 0);
+        return () => window.clearTimeout(timer);
     }, [clearIncoming, currentConversationId, incomingCall]);
 
     useEffect(() => {
@@ -314,9 +349,10 @@ export default function GlobalIncomingCallNotifier() {
         <IncomingCallModal
             open={Boolean(incomingCall)}
             callerName={
-                incomingCall
+                incomingCallerInfo.callerName ||
+                (incomingCall
                     ? `Người dùng ${incomingCall.fromUserId}`
-                    : "Người dùng"
+                    : "Người dùng")
             }
             callType={incomingCall?.callType || "audio"}
             onAccept={openConversation}

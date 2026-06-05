@@ -1,19 +1,34 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Eye, EyeOff, Lock, Phone, ArrowRight } from "lucide-react";
-import { login } from "../utils/auth";
+import { login, AuthError } from "../utils/auth";
 import { validatePhone } from "../utils/validation";
+
+const formatCountdown = (totalSeconds: number): string => {
+  const m = Math.floor(totalSeconds / 60);
+  const s = totalSeconds % 60;
+  return `${m}:${s.toString().padStart(2, "0")}`;
+};
 
 export default function Login() {
   const navigate = useNavigate();
-  const [phone, setPhone] = useState("0398724346");
+  const [phone, setPhone] = useState("0398721346");
   const [password, setPassword] = useState("Xen123123!");
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [lockCountdown, setLockCountdown] = useState(0);
+  const [accountLocked, setAccountLocked] = useState(false);
+
+  useEffect(() => {
+    if (lockCountdown <= 0) return;
+    const t = setTimeout(() => setLockCountdown((s) => s - 1), 1000);
+    return () => clearTimeout(t);
+  }, [lockCountdown]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (lockCountdown > 0 || accountLocked) return;
     setLoading(true);
     setError("");
 
@@ -38,11 +53,21 @@ export default function Login() {
       }
     } catch (err: any) {
       console.error("Login error:", err);
+      if (err instanceof AuthError) {
+        if (err.remainingSeconds && err.remainingSeconds > 0) {
+          setLockCountdown(err.remainingSeconds);
+        }
+        if (err.code === "ACCOUNT_LOCKED") {
+          setAccountLocked(true);
+        }
+      }
       setError(err.message || "Đăng nhập thất bại. Vui lòng thử lại.");
     } finally {
       setLoading(false);
     }
   };
+
+  const isLocked = lockCountdown > 0 || accountLocked;
 
 
   return (
@@ -56,6 +81,11 @@ export default function Login() {
         {error && (
           <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-center text-sm text-red-600">
             {error}
+            {lockCountdown > 0 && (
+              <div className="mt-1 font-semibold">
+                Thử lại sau {formatCountdown(lockCountdown)}
+              </div>
+            )}
           </div>
         )}
 
@@ -101,10 +131,16 @@ export default function Login() {
         <button
           type="submit"
           className="flex w-full items-center justify-center gap-2 rounded-xl bg-blue-500 py-3.5 font-semibold text-white hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-50"
-          disabled={loading}
+          disabled={loading || isLocked}
         >
-          {loading ? "Đang đăng nhập..." : "Đăng nhập"}
-          {!loading && <ArrowRight className="h-4 w-4" />}
+          {loading
+            ? "Đang đăng nhập..."
+            : lockCountdown > 0
+              ? `Thử lại sau ${formatCountdown(lockCountdown)}`
+              : accountLocked
+                ? "Tài khoản đã khóa"
+                : "Đăng nhập"}
+          {!loading && !isLocked && <ArrowRight className="h-4 w-4" />}
         </button>
       </form>
 

@@ -6,7 +6,18 @@
  */
 import { Client, type IMessage } from "@stomp/stompjs";
 import SockJS from "sockjs-client";
-import type { Message } from "./chatService";
+import type { Conversation, JoinRequest, Message, MessageType, PollResponse } from "./chatService";
+import { SOCKJS_URL } from "../config/backend";
+
+const normalizePresencePhone = (phone?: string | null): string | null => {
+    if (!phone) return null;
+    const normalized = phone.trim().replace(/\s+/g, "");
+    if (!normalized) return null;
+    if (normalized.startsWith("+84")) return normalized;
+    if (normalized.startsWith("0")) return `+84${normalized.substring(1)}`;
+    if (normalized.startsWith("84")) return `+${normalized}`;
+    return `+84${normalized}`;
+};
 
 export type CallStatus =
     | "calling"
@@ -21,7 +32,11 @@ export type CallSignalEvent =
     | "answer-call"
     | "ice-candidate"
     | "reject-call"
-    | "end-call";
+    | "end-call"
+    | "join-call"
+    | "call-participants"
+    | "request-active-call"
+    | "check-active-call";
 
 export interface CallSignalPayload {
     event: CallSignalEvent;
@@ -30,8 +45,9 @@ export interface CallSignalPayload {
     callType: "audio" | "video";
     fromUserId: number;
     targetUserId: number;
+    participantUserIds?: number[];
     sdp?: RTCSessionDescriptionInit;
-    candidate?: RTCIceCandidateInit;
+    candidate?: RTCIceCandidateInit | Record<string, unknown>;
     timestamp?: string;
 }
 
@@ -43,16 +59,24 @@ export type DomainEventType =
     | "MESSAGE_CREATED" // Tin nhắn mới được tạo
     | "MESSAGE_RECALLED" // Tin nhắn bị thu hồi
     | "MESSAGE_SEEN" // Đánh dấu đã xem tin nhắn
+    | "MESSAGE_REACTION" // Cập nhật reaction của tin nhắn
     | "TYPING" // User đang soạn tin nhắn
     | "ROOM_CREATED" // Phòng chat mới
     | "ROOM_UPDATED" // Phòng chat được cập nhật
     | "ROOM_DELETED" // Phòng chat bị xóa
     | "MEMBER_ADDED" // Thành viên mới tham gia
-    | "MEMBER_REMOVED" // Thành viên rời khỏi
-    | "MEMBER_ROLE_CHANGED" // Thay đổi vai trò thành viên
+    | "MEMBER_ROLE_UPDATED"
+    | "MEMBER_LEFT"
+    | "MEMBER_KICKED"
+    | "CONVERSATION_BLOCKED_MEMBERS_UPDATED"
+    | "GROUP_DISBANDED"
     | "PIN_MESSAGE"
     | "UPIN_MESSAGE"
-    | "MEMBER_UPDATED";
+    | "MEMBER_UPDATED"
+    | "MEMBER_ACCOUNT_LOCK_CHANGED"
+    | "DIRECT_BLOCK_STATUS_CHANGED"
+    | "NEW_JOIN_REQUEST"
+    | "JOIN_REQUEST_PROCESSED";
 
 export interface PinUpdatedEvent {
     domainEventType: "PIN_MESSAGE" | "UPIN_MESSAGE";
@@ -61,6 +85,22 @@ export interface PinUpdatedEvent {
         messageId: string;
         pinnerId: number;
         pinnedAt: string;
+        originalSenderId?: number;
+        type?:
+        | "TEXT"
+        | "IMAGE"
+        | "VIDEO"
+        | "FILE"
+        | "AUDIO"
+        | "CALL"
+        | "SYSTEM_PIN"
+        | "SYSTEM_UPIN"
+        | "SYSTEM_POLL_CREATED"
+        | "SYSTEM_POLL_VOTED"
+        | "SYSTEM_POLL_CHANGED"
+        | "SYSTEM_POLL_CLOSED"
+        | "SYSTEM_POLL_PINNED";
+        content?: string;
     }>;
 }
 
@@ -70,6 +110,26 @@ export interface MemberUpdatedEvent {
     userId: number;
     newNickname: string;
     newAvatar?: string;
+}
+
+/**
+ * Sự kiện realtime khi tài khoản của 1 thành viên bị khóa/mở khóa.
+ * Phát trên cùng topic /topic/conversations/{id}/members.
+ * FE dùng để mask (hoặc bỏ mask) tên + avatar cho các user khác cùng hội thoại.
+ */
+export interface MemberAccountLockChangedEvent {
+    domainEventType: "MEMBER_ACCOUNT_LOCK_CHANGED";
+    conversationId: number;
+    userId: number;
+    accountLocked: boolean;
+}
+
+export interface DirectBlockStatusChangedEvent {
+    domainEventType: "DIRECT_BLOCK_STATUS_CHANGED";
+    conversationId: number;
+    blockerId: number;
+    blockedId: number;
+    blocked: boolean;
 }
 
 /**
@@ -135,6 +195,16 @@ export interface MessageSeenEvent {
     };
 }
 
+export interface MessageReactionEvent {
+    domainEventType: "MESSAGE_REACTION";
+    messageResponse: Message;
+}
+
+export interface PollUpdatedEvent {
+    domainEventType: "POLL_UPDATED";
+    poll: PollResponse;
+}
+
 /**
  * Interface cho TypingEvent từ backend
  *
@@ -177,8 +247,9 @@ export interface TypingEvent {
  * 5. Cập nhật sidebar với lastMessage mới
  */
 export interface ConversationUpdatedEvent {
-    // Loại event - luôn là "ROOM_UPDATED"
-    type: "ROOM_UPDATED";
+    // Loại event từ backend
+    domainEventType?: "ROOM_UPDATED";
+    type?: "ROOM_UPDATED";
 
     // ID của conversation được cập nhật - nằm trong event, KHÔNG nằm trong lastMessage
     conversationId: number;
@@ -187,7 +258,7 @@ export interface ConversationUpdatedEvent {
     // LƯU Ý: Backend không gửi conversationId trong lastMessage
     lastMessage: {
         lastMessageContent: string; // Nội dung tin nhắn
-        lastMessageType: "TEXT" | "IMAGE" | "FILE" | "VIDEO" | "AUDIO" | "CALL"; // Loại tin nhắn
+        lastMessageType: MessageType; // Loại tin nhắn
         lastSenderId: number; // ID người gửi
         lastSenderName: string; // Tên người gửi
         lastMessageAt: string; // Thời điểm gửi (ISO string)
@@ -195,11 +266,148 @@ export interface ConversationUpdatedEvent {
     };
 }
 
+export interface ConversationCreatedEvent {
+    domainEventType?: "ROOM_CREATED";
+    type?: "ROOM_CREATED";
+    conversationResponse?: Conversation;
+}
+
+export interface ConversationMembershipEvent {
+    domainEventType?:
+    | "MEMBER_ADDED"
+    | "MEMBER_ROLE_UPDATED"
+    | "MEMBER_LEFT"
+    | "MEMBER_KICKED";
+    conversationResponse?: Conversation;
+}
+
+export interface GroupDisbandedEvent {
+    domainEventType?: "GROUP_DISBANDED";
+    conversationId?: number;
+    lastMessage?: LastMessageUpdate;
+}
+
+export interface NewJoinRequestEvent {
+    domainEventType: "NEW_JOIN_REQUEST";
+    conversationId: number;
+    requestData: JoinRequest;
+}
+
+export interface JoinRequestProcessedEvent {
+    domainEventType: "JOIN_REQUEST_PROCESSED";
+    conversationId: number;
+    requestId: number;
+}
+
+export interface BlockedMembersUpdatedEvent {
+    domainEventType: "CONVERSATION_BLOCKED_MEMBERS_UPDATED";
+    conversationId: number;
+    targetUserId: number;
+    blocked: boolean;
+}
+
 /**
  * Type alias cho dữ liệu cập nhật conversation
  * Để backward compatible với code hiện tại
  */
 export type LastMessageUpdate = ConversationUpdatedEvent["lastMessage"];
+
+export type ConversationSnapshot = Conversation & {
+    processedJoinRequestId?: number;
+};
+
+function toFiniteNumber(value: unknown): number | null {
+    const numberValue = Number(value);
+    return Number.isFinite(numberValue) ? numberValue : null;
+}
+
+function toLastMessageUpdate(
+    conversation: Conversation,
+): LastMessageUpdate | null {
+    const lastMessage = conversation.lastMessage;
+    if (!lastMessage) return null;
+
+    return {
+        lastMessageContent: lastMessage.lastMessageContent,
+        lastMessageType: lastMessage.lastMessageType,
+        lastSenderId: lastMessage.lastSenderId,
+        lastSenderName: lastMessage.lastSenderName,
+        lastMessageAt: lastMessage.lastMessageAt,
+        read: lastMessage.read,
+    };
+}
+
+function buildFallbackLastMessageUpdate(
+    conversation: Conversation,
+): LastMessageUpdate {
+    return {
+        lastMessageContent: "",
+        lastMessageType: "SYSTEM_CREATE_GROUP",
+        lastSenderId: 0,
+        lastSenderName: "",
+        lastMessageAt: conversation.updatedAt,
+        read: false,
+    };
+}
+
+function buildSystemFallbackByDomainEvent(
+    domainEventType?: DomainEventType,
+): LastMessageUpdate {
+    const now = new Date().toISOString();
+
+    if (domainEventType === "MEMBER_ADDED") {
+        return {
+            lastMessageContent: "",
+            lastMessageType: "SYSTEM_ADD_MEMBER",
+            lastSenderId: 0,
+            lastSenderName: "",
+            lastMessageAt: now,
+            read: false,
+        };
+    }
+
+    if (domainEventType === "MEMBER_ROLE_UPDATED") {
+        return {
+            lastMessageContent: "",
+            lastMessageType: "SYSTEM_UPDATE_ROLE",
+            lastSenderId: 0,
+            lastSenderName: "",
+            lastMessageAt: now,
+            read: false,
+        };
+    }
+
+    if (domainEventType === "MEMBER_KICKED") {
+        return {
+            lastMessageContent: "",
+            lastMessageType: "SYSTEM_KICK_MEMBER",
+            lastSenderId: 0,
+            lastSenderName: "",
+            lastMessageAt: now,
+            read: false,
+        };
+    }
+
+    if (domainEventType === "MEMBER_LEFT") {
+        return {
+            lastMessageContent: "",
+            lastMessageType: "SYSTEM_LEAVE_GROUP",
+            lastSenderId: 0,
+            lastSenderName: "",
+            lastMessageAt: now,
+            read: false,
+        };
+    }
+
+    return {
+        lastMessageContent: "",
+        lastMessageType: "SYSTEM_DISBAND_GROUP",
+        lastSenderId: 0,
+        lastSenderName: "",
+        lastMessageAt: now,
+        read: false,
+    };
+}
 /**
  * WebSocketService - Singleton service quản lý kết nối WebSocket real-time
  *
@@ -222,10 +430,40 @@ class WebSocketService {
      * Value: subscription object để unsubscribe sau này
      */
     private subscriptions: Map<string, any> = new Map();
+    private subscriptionFactories: Map<
+        string,
+        () => { unsubscribe: () => void }
+    > = new Map();
+    private userConversationCallbacks: Map<
+        number,
+        Set<(
+            conversationId: number,
+            lastMessage: LastMessageUpdate,
+            conversation?: ConversationSnapshot,
+        ) => void>
+    > = new Map();
+    private profileUpdateListeners: Map<
+        string,
+        Set<(updatedUser: any) => void>
+    > = new Map();
+    private topicListeners: Map<
+        string,
+        Set<(message: any) => void>
+    > = new Map();
 
     private callEventListeners: Map<
         number,
         Set<(event: CallSignalPayload) => void>
+    > = new Map();
+    private presenceLoginPhone: string | null = null;
+    private presenceHeartbeatTimer: number | null = null;
+    private presenceListeners: Map<
+        number,
+        Set<(event: { userId: number; online: boolean; lastActiveAt?: string | null }) => void>
+    > = new Map();
+    private conversationSeenCallbacks: Map<
+        number,
+        Set<(event: MessageSeenEvent) => void>
     > = new Map();
 
     /**
@@ -235,6 +473,79 @@ class WebSocketService {
      * Dùng để tránh nhiều component cùng gọi connect() tạo duplicate connections
      */
     private connectPromise: Promise<void> | null = null;
+
+    setPresenceIdentity(phone?: string | null) {
+        // Phone được gửi qua STOMP CONNECT header "login" để backend map session -> user.
+        this.presenceLoginPhone = normalizePresencePhone(phone);
+    }
+
+    private getPresenceConnectHeaders(): Record<string, string> | undefined {
+        return this.presenceLoginPhone ? { login: this.presenceLoginPhone } : undefined;
+    }
+
+    private startPresenceHeartbeat() {
+        this.stopPresenceHeartbeat();
+        if (!this.presenceLoginPhone) return;
+
+        // Heartbeat presence chạy trên WebSocket đang mở, không tạo request REST định kỳ.
+        this.presenceHeartbeatTimer = window.setInterval(() => {
+            if (!this.client?.connected) return;
+            this.client.publish({
+                destination: "/app/presence/heartbeat",
+                body: "{}",
+            });
+        }, 30000);
+    }
+
+    private stopPresenceHeartbeat() {
+        if (this.presenceHeartbeatTimer) {
+            window.clearInterval(this.presenceHeartbeatTimer);
+            this.presenceHeartbeatTimer = null;
+        }
+    }
+
+    private syncSubscriptions() {
+        if (!this.client?.connected) return;
+
+        this.subscriptionFactories.forEach((factory, destination) => {
+            if (this.subscriptions.has(destination)) return;
+
+            try {
+                const subscription = factory();
+                this.subscriptions.set(destination, subscription);
+            } catch (error) {
+                console.warn("Không thể đồng bộ lại WebSocket subscription:", {
+                    destination,
+                    error,
+                });
+            }
+        });
+    }
+
+    private registerSubscription(
+        destination: string,
+        factory: () => { unsubscribe: () => void },
+    ) {
+        this.subscriptionFactories.set(destination, factory);
+
+        const activeSubscription = this.subscriptions.get(destination);
+        if (activeSubscription) {
+            activeSubscription.unsubscribe();
+            this.subscriptions.delete(destination);
+        }
+
+        this.syncSubscriptions();
+    }
+
+    private removeSubscription(destination: string) {
+        const activeSubscription = this.subscriptions.get(destination);
+        if (activeSubscription) {
+            activeSubscription.unsubscribe();
+            this.subscriptions.delete(destination);
+        }
+
+        this.subscriptionFactories.delete(destination);
+    }
 
     /**
      * Thiết lập kết nối WebSocket tới server
@@ -277,11 +588,14 @@ class WebSocketService {
                 /**
                  * webSocketFactory: Hàm tạo WebSocket connection
                  * Sử dụng SockJS làm fallback cho các browser không hỗ trợ WebSocket
-                 * Endpoint: http://localhost:8080/ws (backend Spring Boot)
+                 * Endpoint: /ws (proxy hoặc cùng origin)
                  */
                 webSocketFactory: () => {
-                    console.log("🟡 Creating SockJS connection to http://localhost:8080/ws");
-                    return new SockJS("http://localhost:8080/ws");
+                    console.log(
+                        "🟡 Creating SockJS connection to",
+                        SOCKJS_URL,
+                    );
+                    return new SockJS(SOCKJS_URL);
                 },
 
                 /**
@@ -311,6 +625,7 @@ class WebSocketService {
                  * Để server biết client còn sống
                  */
                 heartbeatOutgoing: 4000,
+                connectHeaders: this.getPresenceConnectHeaders(),
 
                 /**
                  * onConnect: Callback khi STOMP connection thành công
@@ -320,6 +635,9 @@ class WebSocketService {
                 onConnect: () => {
                     console.log("🟢🟢🟢 STOMP Connected to server 🟢🟢🟢");
                     this.connectPromise = null; // Reset promise
+                    this.startPresenceHeartbeat();
+                    this.syncSubscriptions();
+                    window.dispatchEvent(new Event("wisdom-websocket-reconnected"));
                     onConnect?.(); // Gọi callback của caller
                     resolve(); // Resolve promise để caller biết đã kết nối xong
                 },
@@ -348,6 +666,11 @@ class WebSocketService {
                     onError?.(error);
                     reject(error); // Reject promise
                 },
+                onWebSocketClose: () => {
+                    this.stopPresenceHeartbeat();
+                    this.connectPromise = null;
+                    this.subscriptions.clear();
+                },
             });
 
             /**
@@ -375,12 +698,16 @@ class WebSocketService {
      * 4. Reset client về null
      */
     disconnect() {
+        this.stopPresenceHeartbeat();
         if (this.client) {
             // Unsubscribe tất cả subscriptions trước khi disconnect
             this.subscriptions.forEach((subscription) => {
                 subscription.unsubscribe();
             });
             this.subscriptions.clear();
+            this.subscriptionFactories.clear();
+            this.profileUpdateListeners.clear();
+            this.presenceListeners.clear();
 
             // Deactivate client (gửi DISCONNECT, đóng WebSocket)
             this.client.deactivate();
@@ -424,22 +751,19 @@ class WebSocketService {
         onRecall?: (messageId: string) => void,
         onMessageSeen?: (event: MessageSeenEvent) => void,
         onTyping?: (event: TypingEvent) => void,
+        onReaction?: (message: Message) => void,
+        onPollUpdated?: (poll: PollResponse) => void,
     ) {
         // BƯỚC 1: Kiểm tra client đã kết nối chưa
         // client.connected = true chỉ khi STOMP handshake hoàn tất
-        if (!this.client?.connected) {
-            console.error("WebSocket not connected, cannot subscribe");
-            return;
-        }
-
         // BƯỚC 2: Tạo destination theo format của backend: /topic/conversation/{id}
         const destination = `/topic/conversation/${conversationId}`;
 
         // BƯỚC 3: Kiểm tra đã subscribe destination này chưa để tránh duplicate
         const existingSubscription = this.subscriptions.get(destination);
         if (existingSubscription) {
-            // console.log(`Already subscribed to ${destination}`);
-            return;
+            existingSubscription.unsubscribe();
+            this.subscriptions.delete(destination);
         }
 
         /**
@@ -454,7 +778,13 @@ class WebSocketService {
          * 3. Phân loại dựa vào domainEventType
          * 4. Gọi callback tương ứng
          */
-        const subscription = this.client.subscribe(
+        this.registerSubscription(destination, () => {
+            const client = this.client;
+            if (!client?.connected) {
+                throw new Error("WebSocket not connected");
+            }
+
+            return client.subscribe(
             destination,
             (message: IMessage) => {
                 try {
@@ -462,7 +792,9 @@ class WebSocketService {
                         | MessageCreatedEvent
                         | MessageRecalledEvent
                         | MessageSeenEvent
-                        | TypingEvent;
+                        | TypingEvent
+                        | MessageReactionEvent
+                        | PollUpdatedEvent;
 
                     console.log("Received conversation event:", event);
 
@@ -481,15 +813,22 @@ class WebSocketService {
                         const payload = (event as MessageCreatedEvent)
                             .messageResponse;
                         if (payload) callback(payload);
+                    } else if (event.domainEventType === "MESSAGE_REACTION") {
+                        const payload = (event as MessageReactionEvent)
+                            .messageResponse;
+                        if (payload) onReaction?.(payload);
+                    } else if (event.domainEventType === "POLL_UPDATED") {
+                        const payload = (event as PollUpdatedEvent).poll;
+                        if (payload) onPollUpdated?.(payload);
                     }
                 } catch (error) {
                     console.error("Error parsing message:", error);
                 }
             },
-        );
+            );
+        });
 
         // BƯỚC 5: Lưu subscription vào Map để có thể unsubscribe sau
-        this.subscriptions.set(destination, subscription);
         // console.log(`Subscribed to ${destination}`);
     }
 
@@ -507,6 +846,7 @@ class WebSocketService {
      */
     unsubscribeFromConversation(conversationId: number) {
         const destination = `/topic/conversation/${conversationId}`;
+        this.subscriptionFactories.delete(destination);
         const subscription = this.subscriptions.get(destination);
 
         if (subscription) {
@@ -517,6 +857,55 @@ class WebSocketService {
             this.subscriptions.delete(destination);
             // console.log(`Unsubscribed from ${destination}`);
         }
+    }
+
+    subscribeToConversationSeen(
+        conversationId: number,
+        onMessageSeen: (event: MessageSeenEvent) => void,
+    ) {
+        const callbacks =
+            this.conversationSeenCallbacks.get(conversationId) ?? new Set();
+        callbacks.add(onMessageSeen);
+        this.conversationSeenCallbacks.set(conversationId, callbacks);
+
+        if (!this.client?.connected) {
+            console.error("WebSocket not connected, cannot subscribe to seen sync");
+            return;
+        }
+
+        const destination = `/topic/conversation/${conversationId}`;
+        const key = `${destination}::seen-sync`;
+        if (this.subscriptions.has(key)) return;
+
+        const subscription = this.client.subscribe(destination, (message: IMessage) => {
+            try {
+                const event = JSON.parse(message.body) as MessageSeenEvent;
+                if (event.domainEventType === "MESSAGE_SEEN") {
+                    this.conversationSeenCallbacks
+                        .get(conversationId)
+                        ?.forEach((callback) => callback(event));
+                }
+            } catch {
+                // no-op: this lightweight listener only cares about MESSAGE_SEEN.
+            }
+        });
+
+        this.subscriptions.set(key, subscription);
+    }
+
+    unsubscribeFromConversationSeen(
+        conversationId: number,
+        onMessageSeen?: (event: MessageSeenEvent) => void,
+    ) {
+        const key = `/topic/conversation/${conversationId}::seen-sync`;
+        const callbacks = this.conversationSeenCallbacks.get(conversationId);
+        if (callbacks && onMessageSeen) {
+            callbacks.delete(onMessageSeen);
+            if (callbacks.size > 0) return;
+        }
+
+        this.conversationSeenCallbacks.delete(conversationId);
+        this.removeSubscription(key);
     }
 
     subscribeToConversationPins(
@@ -532,7 +921,13 @@ class WebSocketService {
         const existingSubscription = this.subscriptions.get(destination);
         if (existingSubscription) return;
 
-        const subscription = this.client.subscribe(
+        this.registerSubscription(destination, () => {
+            const client = this.client;
+            if (!client?.connected) {
+                throw new Error("WebSocket not connected");
+            }
+
+            return client.subscribe(
             destination,
             (message: IMessage) => {
                 try {
@@ -542,9 +937,9 @@ class WebSocketService {
                     console.error("Error parsing pin update:", error);
                 }
             },
-        );
+            );
+        });
 
-        this.subscriptions.set(destination, subscription);
     }
 
     unsubscribeFromConversationPins(conversationId: number) {
@@ -560,6 +955,8 @@ class WebSocketService {
     subscribeToConversationMembers(
         conversationId: number,
         onMemberUpdated: (event: MemberUpdatedEvent) => void,
+        onAccountLockChanged?: (event: MemberAccountLockChangedEvent) => void,
+        onDirectBlockStatusChanged?: (event: DirectBlockStatusChangedEvent) => void,
     ) {
         if (!this.client?.connected) {
             console.error(
@@ -572,21 +969,43 @@ class WebSocketService {
         const existingSubscription = this.subscriptions.get(destination);
         if (existingSubscription) return;
 
-        const subscription = this.client.subscribe(
+        this.registerSubscription(destination, () => {
+            const client = this.client;
+            if (!client?.connected) {
+                throw new Error("WebSocket not connected");
+            }
+
+            return client.subscribe(
             destination,
             (message: IMessage) => {
                 try {
-                    const event = JSON.parse(
-                        message.body,
-                    ) as MemberUpdatedEvent;
-                    onMemberUpdated(event);
+                    const event = JSON.parse(message.body) as
+                        | MemberUpdatedEvent
+                        | MemberAccountLockChangedEvent
+                        | DirectBlockStatusChangedEvent;
+                    // Phân loại theo domainEventType. Mặc định (client cũ/không có
+                    // field) coi như MEMBER_UPDATED để giữ tương thích ngược.
+                    if (
+                        event.domainEventType === "MEMBER_ACCOUNT_LOCK_CHANGED"
+                    ) {
+                        onAccountLockChanged?.(
+                            event as MemberAccountLockChangedEvent,
+                        );
+                    } else if (
+                        event.domainEventType === "DIRECT_BLOCK_STATUS_CHANGED"
+                    ) {
+                        onDirectBlockStatusChanged?.(
+                            event as DirectBlockStatusChangedEvent,
+                        );
+                    } else {
+                        onMemberUpdated(event as MemberUpdatedEvent);
+                    }
                 } catch (error) {
                     console.error("Error parsing member update:", error);
                 }
             },
-        );
-
-        this.subscriptions.set(destination, subscription);
+            );
+        });
     }
 
     unsubscribeFromConversationMembers(conversationId: number) {
@@ -625,21 +1044,31 @@ class WebSocketService {
         callback: (
             conversationId: number,
             lastMessage: LastMessageUpdate,
+            conversation?: ConversationSnapshot,
         ) => void,
     ) {
         // BƯỚC 1: Kiểm tra kết nối WebSocket
         // Phải đảm bảo STOMP handshake đã hoàn tất trước khi subscribe
-        if (!this.client?.connected) {
-            console.error(
-                "WebSocket not connected, cannot subscribe to user conversations",
-            );
-            return;
-        }
-
         // BƯỚC 2: Tạo destination theo format của backend
         // Format: /topic/user/{userId}/conversations
         // VD: /topic/user/1/conversations cho user có ID = 1
         const destination = `/topic/user/${userId}/conversations`;
+        const callbacks =
+            this.userConversationCallbacks.get(userId) ?? new Set();
+        callbacks.add(callback);
+        this.userConversationCallbacks.set(userId, callbacks);
+        const notifyCallbacks = (
+            conversationId: number,
+            lastMessage: LastMessageUpdate,
+            conversation?: ConversationSnapshot,
+        ) => {
+            const listeners = Array.from(
+                this.userConversationCallbacks.get(userId) ?? [],
+            );
+            listeners.forEach((listener) =>
+                listener(conversationId, lastMessage, conversation),
+            );
+        };
 
         // BƯỚC 3: Kiểm tra đã subscribe destination này chưa
         // Tránh tạo duplicate subscription cho cùng một destination
@@ -657,36 +1086,210 @@ class WebSocketService {
         // 3. Event có cấu trúc: { type: "ROOM_UPDATED", conversationId: X, lastMessage: {...} }
         // 4. Trích xuất conversationId (từ event) và lastMessage (payload) riêng biệt
         // 5. Gọi callback với 2 tham số: conversationId và lastMessage
-        const subscription = this.client.subscribe(
+        this.registerSubscription(destination, () => {
+            const client = this.client;
+            if (!client?.connected) {
+                throw new Error("WebSocket not connected");
+            }
+
+            return client.subscribe(
             destination,
             (message: IMessage) => {
                 try {
-                    // Parse JSON body thành ConversationUpdatedEvent
-                    // Backend gửi: { type: "ROOM_UPDATED", conversationId: 123, lastMessage: {...} }
-                    const event: ConversationUpdatedEvent = JSON.parse(
-                        message.body,
+                    const payload = JSON.parse(message.body) as
+                        | ConversationUpdatedEvent
+                        | ConversationCreatedEvent
+                        | ConversationMembershipEvent
+                        | GroupDisbandedEvent
+                        | NewJoinRequestEvent
+                        | JoinRequestProcessedEvent
+                        | BlockedMembersUpdatedEvent
+                        | MemberAccountLockChangedEvent
+                        | DirectBlockStatusChangedEvent;
+
+                    // Khóa/mở khóa tài khoản của 1 thành viên -> cập nhật SIDEBAR
+                    // (mask/bỏ mask tên + avatar) qua window event, không cần F5.
+                    const lockPayload = payload as MemberAccountLockChangedEvent;
+                    if (
+                        lockPayload.domainEventType ===
+                            "MEMBER_ACCOUNT_LOCK_CHANGED" &&
+                        typeof lockPayload.conversationId === "number"
+                    ) {
+                        window.dispatchEvent(
+                            new CustomEvent(
+                                "conversation-member-lock-changed",
+                                { detail: lockPayload },
+                            ),
+                        );
+                        return;
+                    }
+
+                    const directBlockPayload =
+                        payload as DirectBlockStatusChangedEvent;
+                    if (
+                        directBlockPayload.domainEventType ===
+                            "DIRECT_BLOCK_STATUS_CHANGED" &&
+                        typeof directBlockPayload.conversationId === "number"
+                    ) {
+                        window.dispatchEvent(
+                            new CustomEvent(
+                                "conversation-direct-block-status-changed",
+                                { detail: directBlockPayload },
+                            ),
+                        );
+                        return;
+                    }
+
+                    const createdConversation = (
+                        payload as {
+                            conversationResponse?: Conversation;
+                        }
+                    ).conversationResponse;
+                    if (createdConversation?.id) {
+                        const lastMessageData =
+                            toLastMessageUpdate(createdConversation);
+                        const resolvedLastMessage =
+                            lastMessageData ??
+                            buildFallbackLastMessageUpdate(createdConversation);
+                        const conversationSnapshot: ConversationSnapshot = {
+                            ...createdConversation,
+                            lastMessage:
+                                createdConversation.lastMessage ??
+                                resolvedLastMessage,
+                        };
+
+                        notifyCallbacks(
+                            createdConversation.id,
+                            resolvedLastMessage,
+                            conversationSnapshot,
+                        );
+                        return;
+                    }
+
+                    const disbandPayload = payload as GroupDisbandedEvent;
+                    if (
+                        disbandPayload.domainEventType === "GROUP_DISBANDED" &&
+                        typeof disbandPayload.conversationId === "number"
+                    ) {
+                        notifyCallbacks(
+                            disbandPayload.conversationId,
+                            disbandPayload.lastMessage ??
+                                buildSystemFallbackByDomainEvent(
+                                    disbandPayload.domainEventType,
+                                ),
+                        );
+                        return;
+                    }
+
+                    const joinRequestPayload = payload as NewJoinRequestEvent;
+                    if (
+                        joinRequestPayload.domainEventType === "NEW_JOIN_REQUEST" &&
+                        typeof joinRequestPayload.conversationId === "number" &&
+                        joinRequestPayload.requestData
+                    ) {
+                        const request = joinRequestPayload.requestData;
+                        const requestSnapshotContent =
+                            request.content ||
+                            JSON.stringify([
+                                {
+                                    id: request.userId,
+                                    name: request.userName,
+                                },
+                            ]);
+                        notifyCallbacks(
+                            joinRequestPayload.conversationId,
+                            {
+                                lastMessageContent:
+                                    requestSnapshotContent,
+                                lastMessageType: "SYSTEM_REQUIRE_APPROVAL",
+                                lastSenderId: request.inviterId ?? 0,
+                                lastSenderName: request.inviterName ?? "",
+                                lastMessageAt:
+                                    request.createdAt ||
+                                    new Date().toISOString(),
+                                read: false,
+                            },
+                            {
+                                id: joinRequestPayload.conversationId,
+                                type: "GROUP",
+                                updatedAt:
+                                    request.createdAt ||
+                                    new Date().toISOString(),
+                                pendingRequests: [request],
+                            } as ConversationSnapshot,
+                        );
+                        return;
+                    }
+
+                    const processedJoinRequestPayload =
+                        payload as JoinRequestProcessedEvent;
+                    const processedJoinConversationId = toFiniteNumber(
+                        processedJoinRequestPayload.conversationId,
                     );
+                    const processedJoinRequestId = toFiniteNumber(
+                        processedJoinRequestPayload.requestId,
+                    );
+                    if (
+                        processedJoinRequestPayload.domainEventType ===
+                            "JOIN_REQUEST_PROCESSED" &&
+                        processedJoinConversationId !== null &&
+                        processedJoinRequestId !== null
+                    ) {
+                        const now = new Date().toISOString();
+                        notifyCallbacks(
+                            processedJoinConversationId,
+                            {
+                                lastMessageContent: "",
+                                lastMessageType: "SYSTEM_REQUIRE_APPROVAL",
+                                lastSenderId: 0,
+                                lastSenderName: "",
+                                lastMessageAt: now,
+                                read: true,
+                            },
+                            {
+                                id: processedJoinConversationId,
+                                type: "GROUP",
+                                updatedAt: now,
+                                processedJoinRequestId:
+                                    processedJoinRequestId,
+                            } as ConversationSnapshot,
+                        );
+                        return;
+                    }
 
-                    // Trích xuất conversationId từ event (KHÔNG nằm trong lastMessage)
-                    const conversationId = event.conversationId;
+                    const blockedMembersPayload =
+                        payload as BlockedMembersUpdatedEvent;
+                    if (
+                        blockedMembersPayload.domainEventType ===
+                            "CONVERSATION_BLOCKED_MEMBERS_UPDATED" &&
+                        typeof blockedMembersPayload.conversationId === "number"
+                    ) {
+                        window.dispatchEvent(
+                            new CustomEvent("conversation-blocked-members-updated", {
+                                detail: blockedMembersPayload,
+                            }),
+                        );
+                        return;
+                    }
 
-                    // Trích xuất lastMessage từ event
-                    // lastMessage KHÔNG chứa conversationId, chỉ chứa: lastMessageContent, lastSenderName, etc.
-                    const lastMessageData: LastMessageUpdate =
-                        event.lastMessage;
-
-                    // Gọi callback với 2 tham số riêng biệt
-                    // - conversationId: Để biết cập nhật conversation nào
-                    // - lastMessageData: Thông tin tin nhắn mới nhất
-                    callback(conversationId, lastMessageData);
+                    const updatedEvent = payload as ConversationUpdatedEvent;
+                    if (
+                        typeof updatedEvent.conversationId === "number" &&
+                        updatedEvent.lastMessage
+                    ) {
+                        notifyCallbacks(
+                            updatedEvent.conversationId,
+                            updatedEvent.lastMessage,
+                        );
+                    }
                 } catch (error) {
                     console.error("Error parsing conversation update:", error);
                 }
             },
-        );
+            );
+        });
 
         // BƯỚC 5: Lưu subscription vào Map để có thể unsubscribe sau này
-        this.subscriptions.set(destination, subscription);
         // console.log(`Subscribed to ${destination}`);
     }
 
@@ -707,9 +1310,27 @@ class WebSocketService {
      * 4. Xóa subscription khỏi Map
      * 5. Server ngừng gửi message tới client cho destination này
      */
-    unsubscribeFromUserConversations(userId: number) {
+    unsubscribeFromUserConversations(
+        userId: number,
+        callback?: (
+            conversationId: number,
+            lastMessage: LastMessageUpdate,
+            conversation?: ConversationSnapshot,
+        ) => void,
+    ) {
+        if (callback) {
+            const callbacks = this.userConversationCallbacks.get(userId);
+            callbacks?.delete(callback);
+            if (callbacks && callbacks.size > 0) {
+                return;
+            }
+            this.userConversationCallbacks.delete(userId);
+        } else {
+            this.userConversationCallbacks.delete(userId);
+        }
         // Tạo lại destination để tìm subscription
         const destination = `/topic/user/${userId}/conversations`;
+        this.subscriptionFactories.delete(destination);
         const subscription = this.subscriptions.get(destination);
 
         if (subscription) {
@@ -719,6 +1340,72 @@ class WebSocketService {
             // Xóa khỏi Map để giải phóng bộ nhớ
             this.subscriptions.delete(destination);
             console.log(`Unsubscribed from ${destination}`);
+        }
+    }
+
+    subscribeToPresence(
+        currentUserId: number,
+        callback: (event: { userId: number; online: boolean; lastActiveAt?: string | null }) => void,
+    ) {
+        const listeners =
+            this.presenceListeners.get(currentUserId) ??
+            new Set<(event: { userId: number; online: boolean; lastActiveAt?: string | null }) => void>();
+        listeners.add(callback);
+        this.presenceListeners.set(currentUserId, listeners);
+
+        if (!this.client?.connected) {
+            console.error("WebSocket not connected, cannot subscribe to presence");
+            return;
+        }
+
+        const destination = `/topic/user/${currentUserId}/presence`;
+        const existingSubscription = this.subscriptions.get(destination);
+        if (existingSubscription) return;
+
+        const subscription = this.client.subscribe(destination, (message: IMessage) => {
+            try {
+                const raw = JSON.parse(message.body);
+                const payload = raw?.payload ?? raw?.data ?? raw;
+                const userId = Number(payload?.userId);
+                if (!Number.isFinite(userId)) return;
+
+                // Event realtime chi cap nhat cache UI; snapshot ban dau van lay bang REST.
+                const event = {
+                    userId,
+                    online: Boolean(payload?.online ?? payload?.isOnline),
+                    lastActiveAt: payload?.lastActiveAt ?? null,
+                };
+                this.presenceListeners
+                    .get(currentUserId)
+                    ?.forEach((listener) => listener(event));
+            } catch (error) {
+                console.error("Error parsing presence event:", error);
+            }
+        });
+
+        this.subscriptions.set(destination, subscription);
+    }
+
+    unsubscribeFromPresence(
+        currentUserId: number,
+        callback?: (event: { userId: number; online: boolean; lastActiveAt?: string | null }) => void,
+    ) {
+        const listeners = this.presenceListeners.get(currentUserId);
+
+        if (callback && listeners) {
+            listeners.delete(callback);
+            if (listeners.size > 0) return;
+        }
+
+        if (!callback || !listeners || listeners.size === 0) {
+            this.presenceListeners.delete(currentUserId);
+        }
+
+        const destination = `/topic/user/${currentUserId}/presence`;
+        const subscription = this.subscriptions.get(destination);
+        if (subscription) {
+            subscription.unsubscribe();
+            this.subscriptions.delete(destination);
         }
     }
 
@@ -871,8 +1558,16 @@ class WebSocketService {
      * @param callback - Hàm được gọi khi nhận message
      */
     subscribeToTopic(destination: string, callback: (message: any) => void) {
+        const listeners =
+            this.topicListeners.get(destination) ?? new Set<(message: any) => void>();
+        listeners.add(callback);
+        this.topicListeners.set(destination, listeners);
+
         if (!this.client?.connected) {
-            console.error("WebSocket not connected, cannot subscribe to topic:", destination);
+            console.error(
+                "WebSocket not connected, cannot subscribe to topic:",
+                destination,
+            );
             return;
         }
 
@@ -883,9 +1578,8 @@ class WebSocketService {
             return;
         }
 
-        const subscription = this.client.subscribe(
-            destination,
-            (message: IMessage) => {
+        this.registerSubscription(destination, () =>
+            this.client!.subscribe(destination, (message: IMessage) => {
                 try {
                     // Try to parse as JSON, fallback to raw string
                     let parsedMessage;
@@ -894,14 +1588,17 @@ class WebSocketService {
                     } catch {
                         parsedMessage = message.body;
                     }
-                    callback(parsedMessage);
+                    this.topicListeners
+                        .get(destination)
+                        ?.forEach((listener) => listener(parsedMessage));
                 } catch (error) {
-                    console.error(`Error handling message from ${destination}:`, error);
+                    console.error(
+                        `Error handling message from ${destination}:`,
+                        error,
+                    );
                 }
-            }
+            }),
         );
-
-        this.subscriptions.set(destination, subscription);
         console.log(`Subscribed to ${destination}`);
     }
 
@@ -910,13 +1607,18 @@ class WebSocketService {
      *
      * @param destination - Topic destination to unsubscribe from
      */
-    unsubscribeFromTopic(destination: string) {
-        const subscription = this.subscriptions.get(destination);
-        if (subscription) {
-            subscription.unsubscribe();
-            this.subscriptions.delete(destination);
-            console.log(`Unsubscribed from ${destination}`);
+    unsubscribeFromTopic(destination: string, callback?: (message: any) => void) {
+        if (callback) {
+            const listeners = this.topicListeners.get(destination);
+            listeners?.delete(callback);
+            if (listeners && listeners.size > 0) {
+                return;
+            }
         }
+
+        this.topicListeners.delete(destination);
+        this.removeSubscription(destination);
+        console.log(`Unsubscribed from ${destination}`);
     }
 
     /**
@@ -933,6 +1635,13 @@ class WebSocketService {
         console.log("🔵 subscribeToProfileUpdates called with phone:", phone);
         console.log("🔵 WebSocket client connected?", this.client?.connected);
 
+        const destination = `/topic/user/${phone}/profile-update`;
+        const listeners =
+            this.profileUpdateListeners.get(destination) ??
+            new Set<(updatedUser: any) => void>();
+        listeners.add(callback);
+        this.profileUpdateListeners.set(destination, listeners);
+
         if (!this.client?.connected) {
             console.error(
                 "🔴 WebSocket not connected, cannot subscribe to profile updates",
@@ -940,7 +1649,6 @@ class WebSocketService {
             return;
         }
 
-        const destination = `/topic/user/${phone}/profile-update`;
         console.log("🟡 Destination:", destination);
 
         const existingSubscription = this.subscriptions.get(destination);
@@ -958,13 +1666,21 @@ class WebSocketService {
                 console.log("📨 Message headers:", message.headers);
                 console.log("📨 Raw body string:", message.body);
                 console.log("📨 Body length:", message.body.length);
-                console.log("📨 Body first 100 chars:", message.body.substring(0, 100));
+                console.log(
+                    "📨 Body first 100 chars:",
+                    message.body.substring(0, 100),
+                );
 
                 try {
                     const updatedUser = JSON.parse(message.body);
                     console.log("✅ Successfully parsed:", updatedUser);
-                    console.log("✅ Calling callback with:", updatedUser);
-                    callback(updatedUser);
+                    console.log("✅ Calling callbacks with:", updatedUser);
+                    const currentListeners =
+                        this.profileUpdateListeners.get(destination);
+                    if (!currentListeners) return;
+                    currentListeners.forEach((listener) => {
+                        listener(updatedUser);
+                    });
                 } catch (error) {
                     console.error(`🔴 Error parsing profile update:`, error);
                     console.error("🔴 Failed to parse body:", message.body);
@@ -981,15 +1697,274 @@ class WebSocketService {
      *
      * @param phone - User's phone number (international format)
      */
-    unsubscribeFromProfileUpdates(phone: string) {
+    unsubscribeFromProfileUpdates(
+        phone: string,
+        callback?: (updatedUser: any) => void,
+    ) {
         const destination = `/topic/user/${phone}/profile-update`;
-        const subscription = this.subscriptions.get(destination);
+        const listeners = this.profileUpdateListeners.get(destination);
 
+        if (listeners) {
+            if (callback) {
+                listeners.delete(callback);
+            } else {
+                listeners.clear();
+            }
+
+            if (listeners.size > 0) {
+                return;
+            }
+        }
+
+        this.profileUpdateListeners.delete(destination);
+
+        const subscription = this.subscriptions.get(destination);
         if (subscription) {
             subscription.unsubscribe();
             this.subscriptions.delete(destination);
             console.log(`Unsubscribed from profile updates for ${phone}`);
         }
+    }
+
+    // ── Force logout realtime ──────────────────────────────────────────────
+
+    /**
+     * Subscribe để nhận sự kiện force-logout từ backend khi logoutAllDevices được gọi.
+     * Topic: /topic/user/{phone}/force-logout
+     *
+     * @param phone - Số điện thoại quốc tế của user đang đăng nhập (ví dụ: +84912345678)
+     * @param callback - Hàm được gọi ngay khi nhận được sự kiện force logout
+     */
+    subscribeToForceLogout(phone: string, callback: () => void) {
+        const destination = `/topic/user/${phone}/force-logout`;
+
+        // KHÔNG bail-out khi chưa connected, và KHÔNG yêu cầu phải connected mới
+        // đăng ký. Chỉ cần factory đã đăng ký, syncSubscriptions() (chạy ở MỖI lần
+        // onConnect/reconnect) sẽ tự tạo STOMP subscription ngay khi client kết nối.
+        // Điều này loại bỏ:
+        //  - Race: lúc gọi mà client đang reconnect (connected=false) -> trước đây
+        //    bail sớm, không đăng ký gì -> không bao giờ subscribe lại.
+        //  - Mất subscription sau reconnect: onWebSocketClose clear() subscriptions,
+        //    chỉ những factory đã đăng ký mới được khôi phục.
+        // (heartbeat 4s + SockJS khiến reconnect xảy ra rất thường xuyên.)
+        if (this.subscriptionFactories.has(destination)) {
+            // Đã đăng ký rồi -> đảm bảo đang được subscribe (idempotent) rồi thoát.
+            this.syncSubscriptions();
+            return;
+        }
+
+        this.registerSubscription(destination, () => {
+            const client = this.client;
+            if (!client?.connected) {
+                throw new Error("WebSocket not connected");
+            }
+
+            return client.subscribe(
+                destination,
+                (message: IMessage) => {
+                    try {
+                        const payload = JSON.parse(message.body);
+                        console.log("🔴 Force logout event received:", payload);
+                        if (payload?.event === "FORCE_LOGOUT") {
+                            callback();
+                        }
+                    } catch (error) {
+                        console.error("Error parsing force-logout event:", error);
+                    }
+                },
+            );
+        });
+
+        console.log(`🔒 Force-logout subscription registered for ${phone} (connected=${this.client?.connected ?? false})`);
+    }
+
+    /**
+     * Unsubscribe khỏi sự kiện force-logout
+     *
+     * @param phone - Số điện thoại quốc tế của user
+     */
+    unsubscribeFromForceLogout(phone: string) {
+        const destination = `/topic/user/${phone}/force-logout`;
+        // Dùng removeSubscription để xóa cả factory đã đăng ký, tránh việc
+        // syncSubscriptions tái lập lại subscription sau khi đã unsubscribe.
+        if (this.subscriptions.has(destination) || this.subscriptionFactories.has(destination)) {
+            this.removeSubscription(destination);
+            console.log(`🔓 Unsubscribed from force-logout for ${phone}`);
+        }
+    }
+
+    /**
+     * Subscribe force-logout theo userId (kênh đáng tin cậy, không phụ thuộc
+     * định dạng số điện thoại). Backend luôn broadcast tới
+     * /topic/user/{userId}/force-logout khi logoutAllDevices được gọi.
+     *
+     * @param userId - ID của user đang đăng nhập
+     * @param callback - Hàm được gọi ngay khi nhận được sự kiện force logout
+     */
+    subscribeToForceLogoutById(userId: number, callback: () => void) {
+        const destination = `/topic/user/${userId}/force-logout`;
+
+        // Giống subscribeToForceLogout: chỉ cần factory được đăng ký,
+        // syncSubscriptions() sẽ tự subscribe ngay khi client kết nối.
+        if (this.subscriptionFactories.has(destination)) {
+            this.syncSubscriptions();
+            return;
+        }
+
+        this.registerSubscription(destination, () => {
+            const client = this.client;
+            if (!client?.connected) {
+                throw new Error("WebSocket not connected");
+            }
+
+            return client.subscribe(
+                destination,
+                (message: IMessage) => {
+                    try {
+                        const payload = JSON.parse(message.body);
+                        console.log("🔴 Force logout event received (by id):", payload);
+                        if (payload?.event === "FORCE_LOGOUT") {
+                            callback();
+                        }
+                    } catch (error) {
+                        console.error("Error parsing force-logout event:", error);
+                    }
+                },
+            );
+        });
+
+        console.log(`🔒 Force-logout (by id) subscription registered for ${userId} (connected=${this.client?.connected ?? false})`);
+    }
+
+    /**
+     * Unsubscribe khỏi sự kiện force-logout theo userId
+     *
+     * @param userId - ID của user
+     */
+    unsubscribeFromForceLogoutById(userId: number) {
+        const destination = `/topic/user/${userId}/force-logout`;
+        if (this.subscriptions.has(destination) || this.subscriptionFactories.has(destination)) {
+            this.removeSubscription(destination);
+            console.log(`🔓 Unsubscribed from force-logout (by id) for ${userId}`);
+        }
+    }
+
+    /**
+     * Force-logout theo NỀN TẢNG: chỉ nhận khi có phiên mới CÙNG nền tảng đăng nhập
+     * (web đá web). Tách khỏi topic force-logout chung (admin khóa / logout-all / đổi
+     * mật khẩu) vốn đá mọi nền tảng.
+     */
+    subscribeToForceLogoutByPlatform(userId: number, platform: string, callback: () => void) {
+        const destination = `/topic/user/${userId}/force-logout/${platform}`;
+        if (this.subscriptionFactories.has(destination)) {
+            this.syncSubscriptions();
+            return;
+        }
+        this.registerSubscription(destination, () => {
+            const client = this.client;
+            if (!client?.connected) {
+                throw new Error("WebSocket not connected");
+            }
+            return client.subscribe(destination, (message: IMessage) => {
+                try {
+                    const payload = JSON.parse(message.body);
+                    if (payload?.event === "FORCE_LOGOUT") {
+                        callback();
+                    }
+                } catch (error) {
+                    console.error("Error parsing force-logout (platform) event:", error);
+                }
+            });
+        });
+    }
+
+    unsubscribeFromForceLogoutByPlatform(userId: number, platform: string) {
+        const destination = `/topic/user/${userId}/force-logout/${platform}`;
+        if (this.subscriptions.has(destination) || this.subscriptionFactories.has(destination)) {
+            this.removeSubscription(destination);
+        }
+    }
+
+    // ── Page realtime ─────────────────────────────────────────────────────
+
+    subscribeToPagePosts(pageId: number, onEvent: (event: Record<string, unknown>) => void) {
+        if (!this.client?.connected) return;
+        const destination = `/topic/page/${pageId}/posts`;
+        if (this.subscriptions.has(destination)) return;
+        const sub = this.client.subscribe(destination, (msg: IMessage) => {
+            try { onEvent(JSON.parse(msg.body) as Record<string, unknown>); } catch { /* ignore */ }
+        });
+        this.subscriptions.set(destination, sub);
+    }
+
+    unsubscribeFromPagePosts(pageId: number) {
+        const destination = `/topic/page/${pageId}/posts`;
+        this.subscriptions.get(destination)?.unsubscribe();
+        this.subscriptions.delete(destination);
+    }
+
+    subscribeToPageList(onEvent: (event: Record<string, unknown>) => void) {
+        if (!this.client?.connected) return;
+        const destination = `/topic/pages`;
+        if (this.subscriptions.has(destination)) return;
+        const sub = this.client.subscribe(destination, (msg: IMessage) => {
+            try { onEvent(JSON.parse(msg.body) as Record<string, unknown>); } catch { /* ignore */ }
+        });
+        this.subscriptions.set(destination, sub);
+    }
+
+    unsubscribeFromPageList() {
+        const destination = `/topic/pages`;
+        this.subscriptions.get(destination)?.unsubscribe();
+        this.subscriptions.delete(destination);
+    }
+
+    subscribeToPageMembers(pageId: number, onEvent: (event: Record<string, unknown>) => void) {
+        if (!this.client?.connected) return;
+        const destination = `/topic/page/${pageId}/members`;
+        if (this.subscriptions.has(destination)) return;
+        const sub = this.client.subscribe(destination, (msg: IMessage) => {
+            try { onEvent(JSON.parse(msg.body) as Record<string, unknown>); } catch { /* ignore */ }
+        });
+        this.subscriptions.set(destination, sub);
+    }
+
+    unsubscribeFromPageMembers(pageId: number) {
+        const destination = `/topic/page/${pageId}/members`;
+        this.subscriptions.get(destination)?.unsubscribe();
+        this.subscriptions.delete(destination);
+    }
+
+    subscribeToUserPageEvents(userId: number, onEvent: (event: Record<string, unknown>) => void) {
+        if (!this.client?.connected) return;
+        const destination = `/topic/user/${userId}/page-events`;
+        if (this.subscriptions.has(destination)) return;
+        const sub = this.client.subscribe(destination, (msg: IMessage) => {
+            try { onEvent(JSON.parse(msg.body) as Record<string, unknown>); } catch { /* ignore */ }
+        });
+        this.subscriptions.set(destination, sub);
+    }
+
+    unsubscribeFromUserPageEvents(userId: number) {
+        const destination = `/topic/user/${userId}/page-events`;
+        this.subscriptions.get(destination)?.unsubscribe();
+        this.subscriptions.delete(destination);
+    }
+
+    subscribeToStory(storyId: string, onEvent: (event: any) => void) {
+        if (!this.client?.connected) return;
+        const destination = `/topic/stories/${storyId}`;
+        if (this.subscriptions.has(destination)) return;
+        const sub = this.client.subscribe(destination, (msg: IMessage) => {
+            try { onEvent(JSON.parse(msg.body)); } catch { /* ignore */ }
+        });
+        this.subscriptions.set(destination, sub);
+    }
+
+    unsubscribeFromStory(storyId: string) {
+        const destination = `/topic/stories/${storyId}`;
+        this.subscriptions.get(destination)?.unsubscribe();
+        this.subscriptions.delete(destination);
     }
 }
 

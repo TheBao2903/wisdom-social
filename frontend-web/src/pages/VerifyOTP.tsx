@@ -1,20 +1,33 @@
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useState, useRef, useEffect } from "react";
 import { ArrowLeft, CheckCircle2, ShieldCheck } from "lucide-react";
-import { confirmRegister, forgotPassword } from "../utils/auth";
+import { confirmRegister, forgotPassword, AuthError } from "../utils/auth";
+
+const formatCountdown = (totalSeconds: number): string => {
+    const m = Math.floor(totalSeconds / 60);
+    const s = totalSeconds % 60;
+    return `${m}:${s.toString().padStart(2, "0")}`;
+};
 
 export default function VerifyOTP() {
     const location = useLocation();
     const navigate = useNavigate();
     const { phone, type } = location.state || {};
     const isRegisterFlow = type === "register";
-    
+
     const [otp, setOtp] = useState(["", "", "", "", "", ""]);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState("");
     const [countdown, setCountdown] = useState(60);
     const [canResend, setCanResend] = useState(false);
+    const [lockCountdown, setLockCountdown] = useState(0);
     const inputRefs = useRef<(HTMLInputElement | null)[]>([]);
+
+    useEffect(() => {
+        if (lockCountdown <= 0) return;
+        const t = setTimeout(() => setLockCountdown((s) => s - 1), 1000);
+        return () => clearTimeout(t);
+    }, [lockCountdown]);
 
     useEffect(() => {
         if (!phone) {
@@ -69,8 +82,9 @@ export default function VerifyOTP() {
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
+        if (lockCountdown > 0) return;
         const otpCode = otp.join("");
-        
+
         if (otpCode.length !== 6) {
             setError("Vui lòng nhập đủ 6 số OTP");
             return;
@@ -89,6 +103,9 @@ export default function VerifyOTP() {
                 });
             }
         } catch (err: any) {
+            if (err instanceof AuthError && err.remainingSeconds && err.remainingSeconds > 0) {
+                setLockCountdown(err.remainingSeconds);
+            }
             setError(err.message || "Mã OTP không đúng. Vui lòng thử lại.");
         } finally {
             setLoading(false);
@@ -134,13 +151,18 @@ export default function VerifyOTP() {
                     {error && (
                         <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-center text-sm text-red-600">
                             {error}
+                            {lockCountdown > 0 && (
+                                <div className="mt-1 font-semibold">
+                                    Thử lại sau {formatCountdown(lockCountdown)}
+                                </div>
+                            )}
                         </div>
                     )}
                     <div className="flex gap-2 justify-center" onPaste={handlePaste}>
                         {otp.map((digit, index) => (
                             <input
                                 key={index}
-                                ref={(el) => (inputRefs.current[index] = el)}
+                                ref={(el) => { inputRefs.current[index] = el; }}
                                 type="text"
                                 inputMode="numeric"
                                 maxLength={1}
@@ -170,11 +192,15 @@ export default function VerifyOTP() {
 
                     <button
                         type="submit"
-                        disabled={loading || otp.join("").length !== 6}
+                        disabled={loading || otp.join("").length !== 6 || lockCountdown > 0}
                         className="flex w-full items-center justify-center gap-2 rounded-xl bg-blue-500 py-3.5 text-white hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-50"
                     >
-                        {loading ? "Đang xác nhận..." : "Xác nhận mã"}
-                        {!loading && <CheckCircle2 className="h-4 w-4" />}
+                        {loading
+                            ? "Đang xác nhận..."
+                            : lockCountdown > 0
+                                ? `Thử lại sau ${formatCountdown(lockCountdown)}`
+                                : "Xác nhận mã"}
+                        {!loading && lockCountdown === 0 && <CheckCircle2 className="h-4 w-4" />}
                     </button>
                 </form>
                 <div className="text-center">

@@ -3,3 +3,5 @@ backend/src/main/resources/application.properties
 package-lock.json
 package.json
 backend/src/main/resources/application.properties
+frontend-web/FRONTEND_VERCEL_DEPLOYMENT_GUIDE.md
+frontend-web/.env.development

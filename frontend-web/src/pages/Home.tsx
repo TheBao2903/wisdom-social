@@ -1,168 +1,137 @@
-import { useState, useEffect } from "react";
-import { mockStories } from "../api/mockData";
+import { useState, useEffect, useCallback, useRef } from "react";
+import toast from "react-hot-toast";
+import { useLocation, useNavigate } from "react-router-dom";
 import StoriesBar from "../components/story/StoriesBar";
-import PostCard from "../components/post/PostCard";
-import axiosClient from "../api/axiosClient";
+import PostCard from "../components/post/post-card/PostCard";
 import { useCurrentUser } from "../hooks/useCurrentUser";
+import { fetchHomeFeedPosts, normalizePost } from "../services/homeFeedService";
+import useRealtimePosts from "../hooks/useRealtimePosts";
+import * as postApi from "../services/postService";
 import type { Post } from "../types";
 
-interface PostData {
-  id: string;
-  authorId: string;
-  content: string;
-  privacy?: string;
-  media?: Array<{ url: string; type: string; order: number }>;
-  stats?: { reactCount: number; commentCount: number; shareCount: number };
-  createdAt: string;
-}
-
 export default function Home() {
+  const location = useLocation();
+  const navigate = useNavigate();
   const currentUser = useCurrentUser();
-  const [posts, setPosts] = useState<Post[]>([]);
+  const [postsMap, setPostsMap] = useState<Map<string, Post>>(new Map());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const nextCursorRef = useRef<string | null>(null);
+  const loadingMoreRef = useRef(false);
+
+  const feedPosts = Array.from(postsMap.values());
+
+  const handlePostCreated = useCallback(async (newPost: any) => {
+    console.log("🔥 WebSocket: NEW_POST received", newPost);
+    toast.success("New post created!");
+    try {
+      const authorData = await postApi.fetchPostAuthorById(newPost.authorId);
+      const normalized = normalizePost(newPost, authorData);
+      setPostsMap((prev) => {
+        const next = new Map(prev);
+        next.set(normalized.id, normalized);
+        return next;
+      });
+    } catch (err) {
+      console.error("Error normalizing created post:", err);
+    }
+  }, []);
+
+  const handlePostUpdated = useCallback((updatedPost: any) => {
+    console.log("🔥 WebSocket: POST_UPDATED received", updatedPost);
+    setPostsMap((prev) => {
+      const postId = updatedPost.id;
+      const existing = prev.get(postId);
+      if (!existing) return prev;
+
+      const next = new Map(prev);
+      next.set(postId, { ...existing, ...updatedPost });
+      return next;
+    });
+  }, []);
+
+  const handlePostDeleted = useCallback((postId: string) => {
+    console.log("🔥 WebSocket: POST_DELETED received", postId);
+    setPostsMap((prev) => {
+      if (!prev.has(postId)) return prev;
+      const next = new Map(prev);
+      next.delete(postId);
+      return next;
+    });
+  }, []);
+
+  const handleActivityBump = useCallback(
+    (postId: string, lastActivityAt: string, actorId?: string) => {
+      console.log("🔥 WebSocket: BUMP received", postId, lastActivityAt, "actor:", actorId);
+
+      setPostsMap((prev) => {
+        const existing = prev.get(postId);
+        if (!existing) return prev;
+
+        const next = new Map(prev);
+        next.set(postId, { ...existing, lastActivityAt });
+        return next;
+      });
+    },
+    []
+  );
+
+  // Listen to global post events
+  useRealtimePosts({
+    topic: "/topic/posts",
+    onPostCreated: handlePostCreated,
+    onPostUpdated: handlePostUpdated,
+    onPostDeleted: handlePostDeleted,
+    onActivityBump: handleActivityBump,
+  });
 
   useEffect(() => {
     let isMounted = true;
 
     const fetchPosts = async () => {
       try {
-        console.log("🔄 Starting to fetch posts...");
         if (!isMounted) return;
         setLoading(true);
 
         if (!currentUser?.id) {
-          console.log("⚠️ No current user, waiting...");
           if (isMounted) setLoading(false);
           return;
         }
 
-        console.log("✅ Current user:", currentUser.id);
         if (isMounted) setError(null);
 
-        let allPosts: PostData[] = [];
+        const routeBoostPostId = (
+          location.state as { boostPostId?: string } | null
+        )?.boostPostId;
+        const storedBoostPostId =
+          sessionStorage.getItem("homeBoostPostId") || undefined;
+        const boostPostId = routeBoostPostId || storedBoostPostId;
 
-        try {
-          // First, try to fetch from friends
-          console.log("📱 Fetching friends...");
-          const friendsResponse = await axiosClient.get(
-            `/users/${currentUser.id}/friends`
-          );
-
-          if (!isMounted) return;
-
-          const friendsData =
-            friendsResponse.data.data || friendsResponse.data || [];
-
-          console.log("👥 Friends found:", friendsData.length);
-
-          const friendIds = [
-            currentUser.id,
-            ...friendsData.map((friend: any) => friend.userId || friend.id),
-          ];
-
-          console.log("📋 Fetching posts from", friendIds.length, "users...");
-
-          const postsPromises = friendIds.map((id) =>
-            axiosClient.get(`/posts/user/${id}`).catch((err) => {
-              console.log(
-                `⚠️ Failed to fetch posts for user ${id}:`,
-                err.message
-              );
-              return { data: { data: [] } };
-            })
-          );
-
-          const postsResponses = await Promise.all(postsPromises);
-
-          if (!isMounted) return;
-
-          allPosts = postsResponses.flatMap(
-            (response) => response.data.data || []
-          );
-
-          console.log("📝 Total posts fetched:", allPosts.length);
-        } catch (friendsError: any) {
-          console.warn("⚠️ Could not fetch friends:", friendsError.message);
-
-          if (!isMounted) return;
-
-          // If friends API fails, just fetch current user's posts
-          console.log("📝 Fetching own posts only...");
-          const postsResponse = await axiosClient.get(
-            `/posts/user/${currentUser.id}`
-          );
-
-          if (!isMounted) return;
-
-          allPosts = postsResponse.data.data || [];
-          console.log("📝 Own posts fetched:", allPosts.length);
-        }
+        const feedResult = await fetchHomeFeedPosts(200, {
+          prioritizePostId: boostPostId,
+        });
 
         if (!isMounted) return;
-
-        // Sort by createdAt descending
-        allPosts.sort(
-          (a, b) =>
-            new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-        );
-
-        // Transform posts to match PostCard format
-        console.log("🔄 Transforming posts...");
-        const transformedPosts = await Promise.all(
-          allPosts.map(async (post) => {
-            try {
-              // Fetch author data
-              const userResponse = await axiosClient.get(
-                `/auth/user/${post.authorId}`
-              );
-              const userData = userResponse.data.data;
-
-              return {
-                id: post.id,
-                user: {
-                  id: userData.id.toString(),
-                  username: userData.username,
-                  fullName: userData.name || userData.username,
-                  avatar:
-                    userData.avatarUrl || "https://i.pravatar.cc/150?img=5",
-                },
-                images:
-                  post.media && post.media.length > 0
-                    ? post.media.map((m) => m.url)
-                    : [],
-                caption: post.content,
-                privacy: post.privacy as any,
-                likes: post.stats?.reactCount || 0,
-                comments: [],
-                createdAt: new Date(post.createdAt).toLocaleString("vi-VN"),
-                isLiked: false,
-                isSaved: false,
-              };
-            } catch (userErr: any) {
-              console.error(
-                "❌ Error fetching author for post",
-                post.id,
-                ":",
-                userErr.message
-              );
-              // Return null for failed posts
-              return null;
-            }
-          })
-        );
-
-        if (!isMounted) return;
-
-        // Filter out null posts (ones that failed to fetch author)
-        const validPosts = transformedPosts.filter(
-          (post) => post !== null
-        ) as Post[];
-        console.log("✅ Successfully transformed", validPosts.length, "posts");
 
         if (isMounted) {
-          setPosts(validPosts);
+          setPostsMap(() => {
+            const next = new Map<string, Post>();
+            feedResult.posts.forEach((post) => {
+              next.set(post.id, post);
+            });
+            return next;
+          });
+          // Update pagination state
+          nextCursorRef.current = feedResult.nextCursorLastActivityAt;
+          setHasMore(feedResult.hasNext);
           setError(null);
+
+          if (boostPostId) {
+            sessionStorage.removeItem("homeBoostPostId");
+            navigate(location.pathname, { replace: true, state: null });
+          }
         }
       } catch (err: any) {
         console.error("❌ Error fetching posts:", err);
@@ -171,7 +140,6 @@ export default function Home() {
         }
       } finally {
         if (isMounted) {
-          console.log("✅ Finished loading posts");
           setLoading(false);
         }
       }
@@ -180,46 +148,107 @@ export default function Home() {
     fetchPosts();
 
     return () => {
-      console.log("🧹 Cleanup: component unmounting");
       isMounted = false;
     };
-  }, [currentUser]);
+  }, [currentUser, location.pathname, location.state, navigate]);
+
+  // Load more handler for infinite scroll
+  const loadMore = useCallback(async () => {
+    if (loadingMoreRef.current || !hasMore || !nextCursorRef.current) return;
+
+    loadingMoreRef.current = true;
+    setLoadingMore(true);
+
+    try {
+      const feedResult = await fetchHomeFeedPosts(200, {
+        lastActivityAt: nextCursorRef.current || undefined,
+      });
+
+      if (feedResult.posts.length === 0) {
+        setHasMore(false);
+        return;
+      }
+
+      setPostsMap((prev) => {
+        const next = new Map(prev);
+        // Only add posts that don't exist yet (avoid duplicates)
+        feedResult.posts.forEach((post) => {
+          if (!next.has(post.id)) {
+            next.set(post.id, post);
+          }
+        });
+        return next;
+      });
+
+      nextCursorRef.current = feedResult.nextCursorLastActivityAt;
+      setHasMore(feedResult.hasNext);
+    } catch (err) {
+      console.error("❌ Error loading more posts:", err);
+    } finally {
+      loadingMoreRef.current = false;
+      setLoadingMore(false);
+    }
+  }, [hasMore]);
+
+  // Intersection Observer for infinite scroll
+  useEffect(() => {
+    const sentinel = document.getElementById("feed-load-more-sentinel");
+    if (!sentinel) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting && hasMore && !loadingMoreRef.current) {
+          void loadMore();
+        }
+      },
+      { threshold: 0.1 }
+    );
+
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [hasMore, loadMore]);
 
   return (
-    <div>
+    <div className="min-h-screen">
       {/* Stories */}
-      <StoriesBar stories={mockStories} />
+      <StoriesBar />
 
-      {/* Posts Feed */}
       <div>
-        {loading && (
+        {loading ? (
           <div className="p-8 text-center">
             <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-gray-900 dark:border-white mx-auto"></div>
             <p className="mt-4 text-gray-500 dark:text-gray-400">
               Loading posts...
             </p>
           </div>
-        )}
-
-        {!loading && !currentUser && (
+        ) : !currentUser ? (
           <div className="p-8 text-center text-gray-500">
             Please login to view posts
           </div>
-        )}
-
-        {error && !loading && (
+        ) : error ? (
           <div className="p-4 text-center text-red-500">{error}</div>
-        )}
-
-        {!loading && currentUser && !error && posts.length === 0 && (
+        ) : postsMap.size === 0 ? (
           <div className="p-8 text-center text-gray-500">
             No posts available. Start following friends to see their posts!
           </div>
-        )}
+        ) : (
+          <>
+            {feedPosts.map((post) => <PostCard key={post.id} post={post} />)}
 
-        {!loading &&
-          !error &&
-          posts.map((post) => <PostCard key={post.id} post={post} />)}
+            {/* Infinite scroll sentinel */}
+            <div id="feed-load-more-sentinel" className="py-8 text-center">
+              {loadingMore && (
+                <div className="flex items-center justify-center gap-2">
+                  <div className="animate-spin rounded-full h-6 w-6 border-2 border-gray-900 dark:border-white"></div>
+                  <span className="text-gray-500">Loading more...</span>
+                </div>
+              )}
+              {!hasMore && !loadingMore && (
+                <span className="text-gray-400 text-sm">You've reached the end</span>
+              )}
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

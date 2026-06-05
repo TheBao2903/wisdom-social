@@ -1,12 +1,15 @@
 import { useState, useEffect, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { 
-    ArrowLeft, Loader2, CheckCircle, XCircle, Clock, 
-    FileText, Image as ImageIcon, MoreVertical, Trash2, ShieldAlert
+import {
+    ArrowLeft, Loader2, CheckCircle, XCircle, Clock,
+    FileText, Trash2, ShieldAlert
 } from "lucide-react";
 import pageService from "../services/pageService";
 import { useCurrentUser } from "../hooks/useCurrentUser";
 import { buildS3Url } from "../utils/s3";
+import { useRealtimePagePosts } from "../hooks/useRealtimePagePosts";
+import ConfirmModal from "../components/common/ConfirmModal";
+
 
 interface Post {
     _id: string;
@@ -22,7 +25,7 @@ export default function PagePosts() {
     const { pageId } = useParams();
     const navigate = useNavigate();
     const currentUser = useCurrentUser();
-    
+
     const [activeTab, setActiveTab] = useState<TabType>("approved");
     const [approvedPosts, setApprovedPosts] = useState<Post[]>([]);
     const [pendingPosts, setPendingPosts] = useState<Post[]>([]);
@@ -30,6 +33,16 @@ export default function PagePosts() {
     const [actionLoading, setActionLoading] = useState<string | null>(null);
     const [isAdmin, setIsAdmin] = useState(false);
     const [accessDenied, setAccessDenied] = useState(false);
+    const [notification, setNotification] = useState<{ title: string; message: string; variant?: "warning" | "default" } | null>(null);
+    const [confirmModal, setConfirmModal] = useState<{
+        title: string; message: string; confirmText: string;
+        variant: "danger" | "warning" | "default";
+        action: () => Promise<void>;
+    } | null>(null);
+
+    const showConfirm = (title: string, message: string, confirmText: string, variant: "danger" | "warning" | "default", action: () => Promise<void>) => {
+        setConfirmModal({ title, message, confirmText, variant, action });
+    };
 
     const loadPosts = useCallback(async () => {
         if (!pageId || !currentUser?.id) return;
@@ -44,13 +57,13 @@ export default function PagePosts() {
             
             // Check if current user is owner or admin
             const currentUserId = Number(currentUser.id);
-            const pageOwnerId = pageData.createdBy?.id 
-                ? Number(pageData.createdBy.id) 
+            const pageOwnerId = pageData.createdBy?.id
+                ? Number(pageData.createdBy.id)
                 : (pageData.userId ? Number(pageData.userId) : null);
-            
+
             const isOwner = currentUserId === pageOwnerId;
-            const currentMember = membersList?.find(m => Number(m.userId) === currentUserId);
-            const hasAdminRole = currentMember?.pageRole === "ADMIN" || currentMember?.pageRole === "MODERATOR";
+            const currentMember = membersList?.find(m => Number(m.user?.id) === currentUserId);
+            const hasAdminRole = currentMember?.role === "ADMIN" || currentMember?.role === "MODERATOR";
             
             const hasAccess = isOwner || hasAdminRole;
             setIsAdmin(hasAccess);
@@ -78,9 +91,49 @@ export default function PagePosts() {
         loadPosts();
     }, [loadPosts]);
 
+    // Real-time: cập nhật bài viết khi có sự kiện WebSocket
+    // numericPageId chỉ được truyền vào sau khi isAdmin đã được xác nhận
+    const numericPageId = pageId ? Number(pageId) : null;
+    useRealtimePagePosts({
+        pageId: isAdmin && numericPageId ? numericPageId : null,
+        onPostSubmitted: (_postId, post) => {
+            // Bài viết mới được submit → thêm vào pending list
+            if (post) {
+                setPendingPosts(prev => {
+                    const newPost = { ...post, _id: (post as any)._id || (post as any).id || _postId } as unknown as Post;
+                    if (prev.some(p => p._id === newPost._id)) return prev;
+                    return [newPost, ...prev];
+                });
+            }
+        },
+        onPostApproved: (postId, post) => {
+            // Bài viết được duyệt → chuyển từ pending sang approved
+            setPendingPosts(prev => {
+                const found = prev.find(p => p._id === postId);
+                if (found || post) {
+                    const rawPost = post ? { ...post, _id: (post as any)._id || (post as any).id || postId } : null;
+                    const approvedPost = (rawPost as unknown as Post) || found;
+                    setApprovedPosts(ap => {
+                        if (ap.some(p => p._id === postId)) return ap;
+                        return [approvedPost, ...ap];
+                    });
+                }
+                return prev.filter(p => p._id !== postId);
+            });
+        },
+        onPostRejected: (postId) => {
+            // Bài viết bị từ chối → xóa khỏi pending
+            setPendingPosts(prev => prev.filter(p => p._id !== postId));
+        },
+        onPostRemoved: (postId) => {
+            // Bài viết bị xóa → xóa khỏi approved
+            setApprovedPosts(prev => prev.filter(p => p._id !== postId));
+        },
+    });
+
     const handleApprovePost = async (postId: string) => {
         if (!pageId || !currentUser?.id) return;
-        
+
         setActionLoading(postId);
         try {
             await pageService.approvePost(currentUser.id, Number(pageId), postId);
@@ -92,79 +145,99 @@ export default function PagePosts() {
             }
         } catch (error) {
             console.error("Error approving post:", error);
-            alert("Không thể duyệt bài viết");
+            setNotification({ title: "Lỗi", message: "Không thể duyệt bài viết", variant: "warning" });
         } finally {
             setActionLoading(null);
         }
     };
 
-    const handleRejectPost = async (postId: string) => {
+    const handleRejectPost = (postId: string) => {
         if (!pageId || !currentUser?.id) return;
-        
-        if (!confirm("Bạn có chắc muốn từ chối bài viết này?")) return;
-        
-        setActionLoading(postId);
-        try {
-            await pageService.cancelApprovePost(currentUser.id, Number(pageId), postId);
-            setPendingPosts(prev => prev.filter(p => p._id !== postId));
-        } catch (error) {
-            console.error("Error rejecting post:", error);
-            alert("Không thể từ chối bài viết");
-        } finally {
-            setActionLoading(null);
-        }
+        showConfirm(
+            "Từ chối bài viết",
+            "Bạn có chắc muốn từ chối bài viết này?",
+            "Từ chối",
+            "warning",
+            async () => {
+                setActionLoading(postId);
+                try {
+                    await pageService.cancelApprovePost(currentUser.id, Number(pageId), postId);
+                    setPendingPosts(prev => prev.filter(p => p._id !== postId));
+                } catch (error) {
+                    console.error("Error rejecting post:", error);
+                    setNotification({ title: "Lỗi", message: "Không thể từ chối bài viết", variant: "warning" });
+                } finally {
+                    setActionLoading(null);
+                }
+            }
+        );
     };
 
-    const handleRemovePost = async (postId: string) => {
+    const handleRemovePost = (postId: string) => {
         if (!pageId || !currentUser?.id) return;
-        
-        if (!confirm("Bạn có chắc muốn xóa bài viết này khỏi page?")) return;
-        
-        setActionLoading(postId);
-        try {
-            await pageService.removePostFromPage(currentUser.id, Number(pageId), postId);
-            setApprovedPosts(prev => prev.filter(p => p._id !== postId));
-        } catch (error) {
-            console.error("Error removing post:", error);
-            alert("Không thể xóa bài viết");
-        } finally {
-            setActionLoading(null);
-        }
+        showConfirm(
+            "Xóa bài viết",
+            "Bạn có chắc muốn xóa bài viết này khỏi page?",
+            "Xóa",
+            "danger",
+            async () => {
+                setActionLoading(postId);
+                try {
+                    await pageService.removePostFromPage(currentUser.id, Number(pageId), postId);
+                    setApprovedPosts(prev => prev.filter(p => p._id !== postId));
+                } catch (error) {
+                    console.error("Error removing post:", error);
+                    setNotification({ title: "Lỗi", message: "Không thể xóa bài viết", variant: "warning" });
+                } finally {
+                    setActionLoading(null);
+                }
+            }
+        );
     };
 
-    const handleApproveAll = async () => {
+    const handleApproveAll = () => {
         if (!pageId || !currentUser?.id || pendingPosts.length === 0) return;
-        
-        if (!confirm(`Duyệt tất cả ${pendingPosts.length} bài viết?`)) return;
-        
-        setActionLoading("all");
-        try {
-            await pageService.approveAllPosts(currentUser.id, Number(pageId));
-            setApprovedPosts(prev => [...pendingPosts, ...prev]);
-            setPendingPosts([]);
-        } catch (error) {
-            console.error("Error approving all posts:", error);
-            alert("Không thể duyệt tất cả bài viết");
-        } finally {
-            setActionLoading(null);
-        }
+        showConfirm(
+            "Duyệt tất cả",
+            `Duyệt tất cả ${pendingPosts.length} bài viết?`,
+            "Duyệt tất cả",
+            "default",
+            async () => {
+                setActionLoading("all");
+                try {
+                    await pageService.approveAllPosts(currentUser.id, Number(pageId));
+                    setApprovedPosts(prev => [...pendingPosts, ...prev]);
+                    setPendingPosts([]);
+                } catch (error) {
+                    console.error("Error approving all posts:", error);
+                    setNotification({ title: "Lỗi", message: "Không thể duyệt tất cả bài viết", variant: "warning" });
+                } finally {
+                    setActionLoading(null);
+                }
+            }
+        );
     };
 
-    const handleRejectAll = async () => {
+    const handleRejectAll = () => {
         if (!pageId || !currentUser?.id || pendingPosts.length === 0) return;
-        
-        if (!confirm(`Từ chối tất cả ${pendingPosts.length} bài viết?`)) return;
-        
-        setActionLoading("all");
-        try {
-            await pageService.cancelAllPosts(currentUser.id, Number(pageId));
-            setPendingPosts([]);
-        } catch (error) {
-            console.error("Error rejecting all posts:", error);
-            alert("Không thể từ chối tất cả bài viết");
-        } finally {
-            setActionLoading(null);
-        }
+        showConfirm(
+            "Từ chối tất cả",
+            `Từ chối tất cả ${pendingPosts.length} bài viết?`,
+            "Từ chối tất cả",
+            "warning",
+            async () => {
+                setActionLoading("all");
+                try {
+                    await pageService.cancelAllPosts(currentUser.id, Number(pageId));
+                    setPendingPosts([]);
+                } catch (error) {
+                    console.error("Error rejecting all posts:", error);
+                    setNotification({ title: "Lỗi", message: "Không thể từ chối tất cả bài viết", variant: "warning" });
+                } finally {
+                    setActionLoading(null);
+                }
+            }
+        );
     };
 
     const renderPostCard = (post: Post, isPending: boolean) => (
@@ -277,6 +350,27 @@ export default function PagePosts() {
 
     return (
         <div className="max-w-4xl mx-auto p-4 md:p-6">
+            {notification && (
+                <ConfirmModal
+                    open
+                    title={notification.title}
+                    message={notification.message}
+                    variant={notification.variant ?? "warning"}
+                    onConfirm={() => setNotification(null)}
+                />
+            )}
+            {confirmModal && (
+                <ConfirmModal
+                    open
+                    title={confirmModal.title}
+                    message={confirmModal.message}
+                    confirmText={confirmModal.confirmText}
+                    cancelText="Hủy"
+                    variant={confirmModal.variant}
+                    onConfirm={async () => { const act = confirmModal.action; setConfirmModal(null); await act(); }}
+                    onCancel={() => setConfirmModal(null)}
+                />
+            )}
             {/* Header */}
             <div className="flex items-center gap-4 mb-6">
                 <button

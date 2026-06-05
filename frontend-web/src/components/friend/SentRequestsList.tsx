@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { Send, Loader2, AlertCircle, X, RefreshCw } from "lucide-react";
+import toast from "react-hot-toast";
 import friendService from "../../services/friendService";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { buildS3Url } from "../../utils/s3";
@@ -52,7 +53,7 @@ export default function SentRequestsList({ onRequestCanceled }: SentRequestsList
             onRequestCanceled?.();
         } catch (err: any) {
             console.error("Error canceling friend request:", err);
-            alert("Không thể hủy lời mời. Vui lòng thử lại.");
+            toast.error("Không thể hủy lời mời. Vui lòng thử lại.");
         } finally {
             setCancelingId(null);
         }

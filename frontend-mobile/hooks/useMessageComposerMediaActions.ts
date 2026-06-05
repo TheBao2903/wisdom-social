@@ -116,13 +116,14 @@ export function useMessageComposerMediaActions({
             const permission =
                 await ImagePicker.requestCameraPermissionsAsync();
             if (!permission.granted) {
-                Alert.alert("Thong bao", "Can cap quyen camera de chup anh");
+                Alert.alert("Thong bao", "Can cap quyen camera de chup/quay");
                 return;
             }
 
             const result = await ImagePicker.launchCameraAsync({
-                mediaTypes: ImagePicker.MediaTypeOptions.Images,
+                mediaTypes: ImagePicker.MediaTypeOptions.All,
                 quality: 1,
+                videoMaxDuration: MAX_CAPTURE_VIDEO_SECONDS,
             });
 
             if (result.canceled || result.assets.length === 0) return;
@@ -134,35 +135,6 @@ export function useMessageComposerMediaActions({
             await sendFiles(files);
         } catch {
             Alert.alert("Thong bao", "Khong the chup anh vao luc nay");
-        }
-    }, [sendFiles, sending, uploading]);
-
-    const onCaptureVideoAndSend = useCallback(async () => {
-        if (uploading || sending) return;
-
-        try {
-            const permission =
-                await ImagePicker.requestCameraPermissionsAsync();
-            if (!permission.granted) {
-                Alert.alert("Thong bao", "Can cap quyen camera de quay video");
-                return;
-            }
-
-            const result = await ImagePicker.launchCameraAsync({
-                mediaTypes: ImagePicker.MediaTypeOptions.Videos,
-                quality: 1,
-                videoMaxDuration: MAX_CAPTURE_VIDEO_SECONDS,
-            });
-
-            if (result.canceled || result.assets.length === 0) return;
-
-            const files: LocalUploadFile[] = result.assets.map((asset, index) =>
-                toUploadFileFromImageAsset(asset, index, "camera-video"),
-            );
-
-            await sendFiles(files);
-        } catch {
-            Alert.alert("Thong bao", "Khong the quay video vao luc nay");
         }
     }, [sendFiles, sending, uploading]);
 
@@ -197,7 +169,6 @@ export function useMessageComposerMediaActions({
     return {
         onPickMediaAndSend,
         onCapturePhotoAndSend,
-        onCaptureVideoAndSend,
         onPickDocumentAndSend,
     };
 }
